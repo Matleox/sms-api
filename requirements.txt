@@ -2,3 +2,8 @@ flask
 flask-cors
 colorama
 requests
+fastapi
+fastapi.security
+sqlite3
+jwt
+time
