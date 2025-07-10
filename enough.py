@@ -1,32 +1,50 @@
-from sms import SendSms
+from flask import Flask, request, jsonify
 import threading
+import uuid
+from enough import is_enough, stop_task
 
-def is_enough(phone, email, count, mode):
-    sms = SendSms(phone, email)
-    servisler_sms = []
+app = Flask(__name__)
 
-    for attr in dir(SendSms):
-        if callable(getattr(SendSms, attr)) and not attr.startswith('__'):
-            servisler_sms.append(attr)
+# Her task için durdurma flag'leri burada tutulacak
+task_flags = {}
 
-    def run_service(func):
-        try:
-            getattr(sms, func)()
-        except Exception:
-            pass  # servis hata verirse geç
+@app.route('/api/sms', methods=['POST'])
+def api_sms():
+    data = request.get_json()
+    phone = data.get('phone')
+    email = data.get('email', '')
+    count = int(data.get('count', 1))
+    mode = data.get('mode', 'normal')
 
-    if mode == "turbo":
-        for i in range(count):
-            threads = []
-            for func in servisler_sms:
-                t = threading.Thread(target=run_service, args=(func,))
-                threads.append(t)
-                t.start()
-            for t in threads:
-                t.join()
+    task_id = uuid.uuid4().hex
+    task_flags[task_id] = True  # task aktif, durdurulmadı
+
+    def run_task():
+        is_enough(phone, email, count, mode, task_id, task_flags)
+
+        # İş bittiğinde task flag kaldır (temizlik)
+        task_flags.pop(task_id, None)
+
+    threading.Thread(target=run_task, daemon=True).start()
+
+    return jsonify({
+        'status': 'success',
+        'message': f'SMS gönderimi başlatıldı. Task ID: {task_id}',
+        'task_id': task_id
+    })
+
+
+@app.route('/api/stop', methods=['POST'])
+def api_stop():
+    data = request.get_json()
+    task_id = data.get('task_id')
+
+    if task_id in task_flags:
+        task_flags[task_id] = False
+        return jsonify({'status': 'success', 'message': f'Task {task_id} durduruldu.'})
     else:
-        for i in range(count):
-            for func in servisler_sms:
-                run_service(func)
+        return jsonify({'status': 'error', 'message': 'Task bulunamadı veya zaten durdurulmuş.'})
 
-    return f"{count} adet SMS {mode} modunda gönderildi."
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000)
