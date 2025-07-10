@@ -1,4 +1,5 @@
 from sms import SendSms
+import threading
 
 def is_enough(phone, email, count, mode):
     sms = SendSms(phone, email)
@@ -8,19 +9,24 @@ def is_enough(phone, email, count, mode):
         if callable(getattr(SendSms, attr)) and not attr.startswith('__'):
             servisler_sms.append(attr)
 
+    def run_service(func):
+        try:
+            getattr(sms, func)()
+        except Exception:
+            pass  # servis hata verirse geç
+
     if mode == "turbo":
-        import threading
-        threads = []
-        for _ in range(count):
+        for i in range(count):
+            threads = []
             for func in servisler_sms:
-                t = threading.Thread(target=getattr(sms, func))
+                t = threading.Thread(target=run_service, args=(func,))
                 threads.append(t)
                 t.start()
-        for t in threads:
-            t.join()
+            for t in threads:
+                t.join()
     else:
-        for _ in range(count):
+        for i in range(count):
             for func in servisler_sms:
-                getattr(sms, func)()
+                run_service(func)
 
     return f"{count} adet SMS {mode} modunda gönderildi."
