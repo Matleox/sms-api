@@ -146,3 +146,5 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLo
     '''), {"key": key, "user_id": user_id, "expiry_date": expiry_date, "is_admin": bool(is_admin)})
     db.commit()
     return {"status": "success", "message": f"Key {key} eklendi, admin: {is_admin}, süre: {expiry_days if not is_admin else 'süresiz'}"}
+
+web: uvicorn main:app --host 0.0.0.0 --port $PORT
