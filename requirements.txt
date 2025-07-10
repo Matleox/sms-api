@@ -7,3 +7,4 @@ fastapi.security
 sqlite3
 jwt
 time
+pyjwt fastapi[all]
