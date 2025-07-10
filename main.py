@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import threading
 import uuid
-from enough import is_enough, stop_task
+from enough import is_enough
 
 app = Flask(__name__)
 
@@ -21,7 +21,6 @@ def api_sms():
 
     def run_task():
         is_enough(phone, email, count, mode, task_id, task_flags)
-
         # İş bittiğinde task flag kaldır (temizlik)
         task_flags.pop(task_id, None)
 
@@ -33,7 +32,6 @@ def api_sms():
         'task_id': task_id
     })
 
-
 @app.route('/api/stop', methods=['POST'])
 def api_stop():
     data = request.get_json()
@@ -44,7 +42,6 @@ def api_stop():
         return jsonify({'status': 'success', 'message': f'Task {task_id} durduruldu.'})
     else:
         return jsonify({'status': 'error', 'message': 'Task bulunamadı veya zaten durdurulmuş.'})
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000)
