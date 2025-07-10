@@ -1,50 +1,36 @@
-from flask import Flask, request, jsonify
+from sms import SendSms
 import threading
-import uuid
-from enough import is_enough, stop_task
 
-app = Flask(__name__)
+def is_enough(phone, email, count, mode, task_id, task_flags):
+    sms = SendSms(phone, email)
+    servisler_sms = []
 
-# Her task için durdurma flag'leri burada tutulacak
-task_flags = {}
+    for attr in dir(SendSms):
+        if callable(getattr(SendSms, attr)) and not attr.startswith('__'):
+            servisler_sms.append(attr)
 
-@app.route('/api/sms', methods=['POST'])
-def api_sms():
-    data = request.get_json()
-    phone = data.get('phone')
-    email = data.get('email', '')
-    count = int(data.get('count', 1))
-    mode = data.get('mode', 'normal')
+    def run_service(func):
+        try:
+            getattr(sms, func)()
+        except Exception:
+            pass  # hata olsa da devam et
 
-    task_id = uuid.uuid4().hex
-    task_flags[task_id] = True  # task aktif, durdurulmadı
-
-    def run_task():
-        is_enough(phone, email, count, mode, task_id, task_flags)
-
-        # İş bittiğinde task flag kaldır (temizlik)
-        task_flags.pop(task_id, None)
-
-    threading.Thread(target=run_task, daemon=True).start()
-
-    return jsonify({
-        'status': 'success',
-        'message': f'SMS gönderimi başlatıldı. Task ID: {task_id}',
-        'task_id': task_id
-    })
-
-
-@app.route('/api/stop', methods=['POST'])
-def api_stop():
-    data = request.get_json()
-    task_id = data.get('task_id')
-
-    if task_id in task_flags:
-        task_flags[task_id] = False
-        return jsonify({'status': 'success', 'message': f'Task {task_id} durduruldu.'})
+    if mode == "turbo":
+        for i in range(count):
+            if not task_flags.get(task_id, False):  # Durdurulmuş mu kontrolü
+                break
+            threads = []
+            for func in servisler_sms:
+                t = threading.Thread(target=run_service, args=(func,))
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
     else:
-        return jsonify({'status': 'error', 'message': 'Task bulunamadı veya zaten durdurulmuş.'})
+        for i in range(count):
+            if not task_flags.get(task_id, False):  # Durdurulmuş mu kontrolü
+                break
+            for func in servisler_sms:
+                run_service(func)
 
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000)
+    return f"{count} adet SMS {mode} modunda gönderildi."
