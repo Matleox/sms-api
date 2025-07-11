@@ -45,12 +45,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
 
 @app.post("/admin/add-key")
 async def add_key(user: UserCreate, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    # Check if key already exists
     existing_key = db.execute(text("SELECT * FROM users WHERE `key` = :key"), {"key": user.key}).fetchone()
     if existing_key:
         raise HTTPException(status_code=400, detail="Key already exists")
 
-    # Generate unique user_id if not provided
     unique_user_id = str(uuid.uuid4()) if not user.user_id else user.user_id
     expiry_date = datetime.utcnow() + timedelta(days=user.expiry_days)
 
@@ -68,3 +66,8 @@ async def add_key(user: UserCreate, current_user: dict = Depends(get_current_use
     )
     db.commit()
     return {"message": "User added successfully", "user_id": unique_user_id}
+
+@app.get("/admin/list-users")
+async def list_users(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    users = db.execute(text("SELECT `key`, user_id, expiry_date, is_admin FROM users")).fetchall()
+    return [{"key": user[0], "user_id": user[1], "expiry_date": user[2].isoformat(), "is_admin": bool(user[3])} for user in users]
