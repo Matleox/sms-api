@@ -173,3 +173,11 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLo
     })
     db.commit()
     return {"status": "success", "message": f"{key} eklendi"}
+
+@app.get("/test-db")
+async def test_db(db: SessionLocal = Depends(get_db)):
+    try:
+        result = db.execute(text("SELECT 1")).fetchone()
+        return {"status": "DB connected"}
+    except Exception as e:
+        return {"error": str(e)}
