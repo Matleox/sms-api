@@ -104,3 +104,8 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: sqlite3.C
               (key, user_id, expiry_date, False))
     db.commit()
     return {"status": "success", "message": f"Key {key} eklendi, süre: {expiry_days} gün"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=10000)
+
