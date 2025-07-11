@@ -13,13 +13,16 @@ def is_enough(phone, email, count, mode):
     sent_count = 0
     failed_count = 0
     total_attempts = 0
+    servis_index = 0
 
-    def run_service(func):
-        nonlocal sent_count, failed_count, total_attempts
+    def run_service():
+        nonlocal sent_count, failed_count, total_attempts, servis_index
         with lock:
             if total_attempts >= count:
                 return
             total_attempts += 1
+            func = servisler_sms[servis_index]
+            servis_index = (servis_index + 1) % len(servisler_sms)  # Başa sar
         try:
             getattr(sms, func)()
             with lock:
@@ -29,23 +32,16 @@ def is_enough(phone, email, count, mode):
                 failed_count += 1
 
     if mode == "turbo":
-        threads_per_cycle = min(5, len(servisler_sms))
-        for _ in range(count):  # count kadar toplam deneme
+        for _ in range(count):
             threads = []
-            for func in servisler_sms[:threads_per_cycle]:
-                if total_attempts >= count:
-                    break
-                t = threading.Thread(target=run_service, args=(func,))
-                threads.append(t)
-                t.start()
+            t = threading.Thread(target=run_service)
+            threads.append(t)
+            t.start()
             for t in threads:
                 t.join()
     else:
-        for _ in range(count):  # count kadar toplam deneme
-            for func in servisler_sms:
-                if total_attempts >= count:
-                    break
-                run_service(func)
+        for _ in range(count):
+            run_service()
 
     print(f"[+] Başarılı! {sent_count} SMS gönderildi")
     for _ in range(failed_count):
