@@ -6,3 +6,4 @@ sqlalchemy==2.0.31
 mysql-connector-python==8.4.0
 python-dotenv
 python-jose
+colorama
