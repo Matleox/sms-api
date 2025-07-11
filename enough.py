@@ -1,5 +1,6 @@
 from sms import SendSms
 import threading
+import requests
 
 def is_enough(phone, email, count, mode):
     sms = SendSms(phone, email)
@@ -9,7 +10,7 @@ def is_enough(phone, email, count, mode):
         if callable(getattr(SendSms, attr)) and not attr.startswith('__'):
             servisler_sms.append(attr)
 
-    lock = threading.Lock()  # Thread-safe counter
+    lock = threading.Lock()
     sent_count = 0
     failed_count = 0
     total_attempts = 0
@@ -21,19 +22,23 @@ def is_enough(phone, email, count, mode):
                 return
             total_attempts += 1
         try:
-            getattr(sms, func)()
-            with lock:
-                sent_count += 1
+            response = getattr(sms, func)()  # Varsayımsal HTTP yanıtı
+            if isinstance(response, requests.Response) and response.status_code == 200:
+                with lock:
+                    sent_count += 1
+            else:
+                with lock:
+                    failed_count += 1
         except Exception:
             with lock:
                 failed_count += 1
 
     if mode == "turbo":
-        threads_per_cycle = min(10, len(servisler_sms))  # Maks 10 thread, Render’a uygun
+        threads_per_cycle = min(5, len(servisler_sms))  # Render için 5 thread
         while total_attempts < count:
             threads = []
             for _ in range(min(threads_per_cycle, count - total_attempts)):
-                for func in servisler_sms[:threads_per_cycle]:  # Sınırlı servis
+                for func in servisler_sms[:threads_per_cycle]:
                     if total_attempts >= count:
                         break
                     t = threading.Thread(target=run_service, args=(func,))
