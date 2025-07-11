@@ -1,21 +1,17 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import OAuth2PasswordBearer
-from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 import jwt
-import requests
 import time
 from datetime import datetime, timedelta
 
 app = FastAPI()
-SECRET_KEY = "super-secret-key"
+SECRET_KEY = "super-secret-key"  # .env’ye koy
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
-SETTINGS_DB = "settings.db"
-
-app.add_middleware(CORSMiddleware, allow_origins=["http://boyleiyi.xyz"], allow_methods=["*"], allow_headers=["*"])
+LIMIT_FILE = "limits.json"
 
 def get_db():
-    conn = sqlite3.connect(SETTINGS_DB)
+    conn = sqlite3.connect("users.db")
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -23,13 +19,7 @@ def get_db():
         conn.close()
 
 def init_db():
-    with sqlite3.connect(SETTINGS_DB) as conn:
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        ''')
+    with sqlite3.connect("users.db") as conn:
         conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 key TEXT PRIMARY KEY,
@@ -58,40 +48,7 @@ async def login(data: dict, db: sqlite3.Connection = Depends(get_db)):
     if user["expiry_date"] and datetime.fromisoformat(user["expiry_date"]) < datetime.now():
         raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
     token = jwt.encode({"user_id": user["user_id"], "is_admin": user["is_admin"]}, SECRET_KEY, algorithm="HS256")
-    return {"access_token": token, "is_admin": user["is_admin"]}
-
-@app.post("/admin/add-key")
-async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: sqlite3.Connection = Depends(get_db)):
-    payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    if not payload["is_admin"]:
-        raise HTTPException(status_code=403, detail="Sadece admin key ekleyebilir!")
-    key = data.get("key")
-    user_id = data.get("user_id")
-    expiry_days = data.get("expiry_days", 0)
-    is_admin = data.get("is_admin", 0)  # 0: kullanıcı, 1: admin
-    expiry_date = None if is_admin else (datetime.now() + timedelta(days=expiry_days)).isoformat() if expiry_days > 0 else None
-    db.execute("INSERT INTO users (key, user_id, expiry_date, is_admin) VALUES (?, ?, ?, ?)",
-              (key, user_id, expiry_date, bool(is_admin)))
-    db.commit()
-    return {"status": "success", "message": f"Key {key} eklendi, admin: {is_admin}, süre: {expiry_days if not is_admin else 'süresiz'}"}
-
-@app.post("/admin/set-api-url")
-async def set_api_url(data: dict, token: str = Depends(oauth2_scheme), db: sqlite3.Connection = Depends(get_db)):
-    payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    if not payload["is_admin"]:
-        raise HTTPException(status_code=403, detail="Sadece admin API URL’si ayarlayabilir!")
-    api_url = data.get("api_url")
-    if not api_url:
-        raise HTTPException(status_code=400, detail="API URL’si eksik!")
-    db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", ("api_url", api_url))
-    db.commit()
-    return {"status": "success", "message": "API URL’si kaydedildi"}
-
-@app.get("/get-api-url")
-async def get_api_url(db: sqlite3.Connection = Depends(get_db)):
-    cursor = db.execute("SELECT value FROM settings WHERE key = ?", ("api_url",))
-    result = cursor.fetchone()
-    return {"api_url": result["value"] if result else ""}
+    return {"access_token": token}
 
 @app.post("/send-sms")
 async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: sqlite3.Connection = Depends(get_db)):
@@ -132,3 +89,17 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: sqlite3.
             print(f"Hata: {e}")
             continue
     return {"status": "success", "success": sent_count, "failed": count - sent_count}
+
+@app.post("/admin/add-key")
+async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: sqlite3.Connection = Depends(get_db)):
+    payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    if not payload["is_admin"]:
+        raise HTTPException(status_code=403, detail="Sadece admin key ekleyebilir!")
+    key = data.get("key")
+    user_id = data.get("user_id")
+    expiry_days = data.get("expiry_days", 30)
+    expiry_date = (datetime.now() + timedelta(days=expiry_days)).isoformat()
+    db.execute("INSERT INTO users (key, user_id, expiry_date, is_admin) VALUES (?, ?, ?, ?)",
+              (key, user_id, expiry_date, False))
+    db.commit()
+    return {"status": "success", "message": f"Key {key} eklendi, süre: {expiry_days} gün"}
