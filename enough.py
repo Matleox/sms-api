@@ -13,19 +13,16 @@ def is_enough(phone, email, count, mode):
     sent_count = 0
     failed_count = 0
     total_attempts = 0
-    servis_index = [0] * min(50, len(servisler_sms))  # 50 paralel istek
 
     def run_service(thread_id):
         nonlocal sent_count, failed_count, total_attempts
-        local_index = 0
+        local_index = thread_id % len(servisler_sms)  # Her thread farklı başlasın
         while True:
             with lock:
                 if total_attempts >= count:
                     return
-                if local_index >= len(servisler_sms):
-                    local_index = 0
                 func = servisler_sms[local_index]
-                local_index += 1
+                local_index = (local_index + 1) % len(servisler_sms)  # Baştan sar
                 total_attempts += 1
             try:
                 getattr(sms, func)()
@@ -37,7 +34,7 @@ def is_enough(phone, email, count, mode):
 
     if mode == "turbo":
         threads = []
-        for i in range(min(50, len(servisler_sms))):  # Maks 50 paralel thread
+        for i in range(len(servisler_sms)):  # Tüm servisler kadar thread
             t = threading.Thread(target=run_service, args=(i,))
             threads.append(t)
             t.start()
