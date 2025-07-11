@@ -51,6 +51,7 @@ def init_db():
                 `key` VARCHAR(255) PRIMARY KEY,
                 user_id TEXT,
                 expiry_date TEXT,
+                created_at TEXT,
                 is_admin BOOLEAN
             );
         """))
@@ -62,12 +63,13 @@ def init_db():
             );
         """))
         conn.execute(text("""
-            INSERT IGNORE INTO users (`key`, user_id, expiry_date, is_admin)
-            VALUES (:key, :user_id, :expiry_date, :is_admin);
+            INSERT IGNORE INTO users (`key`, user_id, expiry_date, created_at, is_admin)
+            VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin);
         """), {
             "key": "admin123",
             "user_id": "admin",
             "expiry_date": "2099-12-31T23:59:59",
+            "created_at": datetime.now().isoformat(),
             "is_admin": True
         })
         conn.execute(text("""
@@ -191,24 +193,70 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLo
     is_admin = data.get("is_admin", False)
     expiry_date = None if is_admin else (datetime.now() + timedelta(days=expiry_days)).isoformat()
     db.execute(text("""
-        INSERT INTO users (`key`, user_id, expiry_date, is_admin)
-        VALUES (:key, :user_id, :expiry_date, :is_admin)
+        INSERT INTO users (`key`, user_id, expiry_date, created_at, is_admin)
+        VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin)
     """), {
         "key": key,
         "user_id": user_id,
         "expiry_date": expiry_date,
+        "created_at": datetime.now().isoformat(),
         "is_admin": is_admin
     })
     db.commit()
-    return {"status": "success", "message": f"{key} eklendi"}
+    return {"status": "success", "message": "Kullanıcı eklendi"}
+
+@app.get("/admin/users")
+async def get_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    
+    result = db.execute(text("SELECT * FROM users ORDER BY expiry_date DESC")).fetchall()
+    users = []
+    for row in result:
+        users.append({
+            "id": row.key,  # key'i id olarak kullan
+            "key": row.key,
+            "user_id": row.user_id,
+            "expiry_date": row.expiry_date,
+            "is_admin": row.is_admin,
+            "created_at": row.created_at if hasattr(row, 'created_at') and row.created_at else row.expiry_date
+        })
+    return users
+
+@app.delete("/admin/users/{user_id}")
+async def delete_user(user_id: str, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    
+    # Önce kullanıcının var olup olmadığını kontrol et
+    result = db.execute(text("SELECT * FROM users WHERE `key` = :user_id"), {"user_id": user_id}).fetchone()
+    if not result:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı!")
+    
+    # Kullanıcıyı sil
+    db.execute(text("DELETE FROM users WHERE `key` = :user_id"), {"user_id": user_id})
+    db.commit()
+    return {"status": "success", "message": "Kullanıcı silindi"}
 
 @app.get("/test-db")
 async def test_db(db: SessionLocal = Depends(get_db)):
     try:
-        result = db.execute(text("SELECT 1")).fetchone()
-        return {"status": "DB connected"}
+        db.execute(text("SELECT 1"))
+        return {"status": "success"}
     except Exception as e:
-        return {"error": str(e)}
+        return {"status": "error", "message": str(e)}
 
 @app.post("/admin/set-backend-url")
 async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
@@ -219,29 +267,27 @@ async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: S
     except jwt.exceptions.DecodeError:
         raise HTTPException(status_code=401, detail="Geçersiz token!")
     if not payload.get("is_admin", False):
-        raise HTTPException(status_code=403, detail="Sadece admin backend URL’si ayarlayabilir!")
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
     backend_url = data.get("backend_url")
     if not backend_url:
-        raise HTTPException(status_code=400, detail="Backend URL’si eksik!")
-    db.execute(text("INSERT INTO settings (`key`, value) VALUES (:key, :value) ON DUPLICATE KEY UPDATE value = :value"),
-              {"key": "backend_url", "value": backend_url})
+        raise HTTPException(status_code=400, detail="Backend URL eksik!")
+    db.execute(text("""
+        INSERT INTO settings (`key`, value)
+        VALUES ('backend_url', :value)
+        ON DUPLICATE KEY UPDATE value = :value
+    """), {"value": backend_url})
     db.commit()
-    return {"status": "success", "message": "Backend URL’si kaydedildi"}
+    return {"status": "success", "message": "Backend URL kaydedildi"}
 
 @app.get("/get-backend-url")
 async def get_backend_url(db: SessionLocal = Depends(get_db)):
-    result = db.execute(text("SELECT value FROM settings WHERE `key` = :key"), {"key": "backend_url"}).fetchone()
-    return {"backend_url": result.value if result else "https://sms-api-qb7q.onrender.com"}
+    result = db.execute(text("SELECT value FROM settings WHERE `key` = 'backend_url'")).fetchone()
+    return {"backend_url": result.value if result else ""}
 
-# Keep API awake
-from fastapi import BackgroundTasks
-import asyncio
-
+@app.get("/")
 async def keep_alive():
-    while True:
-        await asyncio.sleep(300)  # 5 dk
-        print("API awake check!")
+    return {"status": "alive"}
 
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(keep_alive())
+    print(\"API Başlatıldı!\")
