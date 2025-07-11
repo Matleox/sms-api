@@ -7,17 +7,32 @@ import jwt
 import requests
 import time
 from datetime import datetime, timedelta
+import os
+from dotenv import load_dotenv
+
+load_dotenv()  # .env dosyasını yükle
 
 app = FastAPI()
-SECRET_KEY = "super-secret-key"  # Güvenli bir key yap, Render’da environment variable olarak ekle
+SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
-# cPanel MySQL bağlantısı
-DATABASE_URL = "mysql+mysqlconnector://leozzo:bA6Ce59B45067_@<cpanel.boyleiyi.xyz>/leozzo_sms_db"
+# ✅ Doğru MySQL bağlantısı (.env üzerinden)
+DATABASE_URL = (
+    f"mysql+mysqlconnector://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}"
+    f"@{os.getenv('DB_HOST')}/{os.getenv('DB_NAME')}"
+)
+
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-app.add_middleware(CORSMiddleware, allow_origins=["http://boyleiyi.xyz"], allow_methods=["*"], allow_headers=["*"])
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://boyleiyi.xyz"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 def get_db():
     db = SessionLocal()
@@ -49,11 +64,15 @@ def init_db():
                 `count` INTEGER
             )
         '''))
-        # Admin key’i ekle
         conn.execute(text('''
             INSERT IGNORE INTO users (`key`, user_id, expiry_date, is_admin)
             VALUES (:key, :user_id, :expiry_date, :is_admin)
-        '''), {"key": "admin123", "user_id": "admin", "expiry_date": "2099-12-31T23:59:59", "is_admin": True})
+        '''), {
+            "key": "admin123",
+            "user_id": "admin",
+            "expiry_date": "2099-12-31T23:59:59",
+            "is_admin": True
+        })
         conn.commit()
 
 init_db()
@@ -66,7 +85,10 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Geçersiz key!")
     if result.expiry_date and datetime.fromisoformat(result.expiry_date) < datetime.now():
         raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
-    token = jwt.encode({"user_id": result.user_id, "is_admin": result.is_admin}, SECRET_KEY, algorithm="HS256")
+    token = jwt.encode({
+        "user_id": result.user_id,
+        "is_admin": result.is_admin
+    }, SECRET_KEY, algorithm="HS256")
     return {"access_token": token, "is_admin": result.is_admin}
 
 @app.post("/admin/set-api-url")
@@ -77,10 +99,13 @@ async def set_api_url(data: dict, token: str = Depends(oauth2_scheme), db: Sessi
     api_url = data.get("api_url")
     if not api_url:
         raise HTTPException(status_code=400, detail="API URL’si eksik!")
-    db.execute(text("INSERT INTO settings (`key`, value) VALUES (:key, :value) ON DUPLICATE KEY UPDATE value = :value"),
-              {"key": "api_url", "value": api_url})
+    db.execute(text('''
+        INSERT INTO settings (`key`, value)
+        VALUES (:key, :value)
+        ON DUPLICATE KEY UPDATE value = :value
+    '''), {"key": "api_url", "value": api_url})
     db.commit()
-    return {"status": "success", "message": "API URL’si kaydedildi"}
+    return {"status": "success", "message": "API URL kaydedildi"}
 
 @app.get("/get-api-url")
 async def get_api_url(db: SessionLocal = Depends(get_db)):
@@ -102,13 +127,14 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
 
     if not is_admin:
         result = db.execute(text("SELECT `count` FROM sms_limits WHERE user_id = :user_id AND `date` = :date"),
-                          {"user_id": user_id, "date": today}).fetchone()
+                            {"user_id": user_id, "date": today}).fetchone()
         user_limit = result.count if result else 0
         if user_limit >= 500:
             raise HTTPException(status_code=403, detail="Günlük 500 SMS limiti!")
 
     sent_count = 0
     delay = 0 if mode == 2 else 0.5
+
     for _ in range(count):
         if sent_count >= count or (not is_admin and user_limit + sent_count >= 500):
             break
@@ -116,18 +142,25 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
             response = requests.post("https://api.bulksms.com/...", json=data)
             response.raise_for_status()
             sent_count += 1
+
             if not is_admin:
                 db.execute(text('''
                     INSERT INTO sms_limits (user_id, `date`, `count`)
                     VALUES (:user_id, :date, :count)
                     ON DUPLICATE KEY UPDATE `count` = :count
-                '''), {"user_id": user_id, "date": today, "count": user_limit + sent_count})
+                '''), {
+                    "user_id": user_id,
+                    "date": today,
+                    "count": user_limit + sent_count
+                })
                 db.commit()
+
             if mode == 1:
                 time.sleep(delay)
         except Exception as e:
             print(f"Hata: {e}")
             continue
+
     return {"status": "success", "success": sent_count, "failed": count - sent_count}
 
 @app.post("/admin/add-key")
@@ -135,14 +168,21 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLo
     payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     if not payload["is_admin"]:
         raise HTTPException(status_code=403, detail="Sadece admin key ekleyebilir!")
+
     key = data.get("key")
     user_id = data.get("user_id")
     expiry_days = data.get("expiry_days", 0)
-    is_admin = data.get("is_admin", 0)
-    expiry_date = None if is_admin else (datetime.now() + timedelta(days=expiry_days)).isoformat() if expiry_days > 0 else None
+    is_admin = data.get("is_admin", False)
+    expiry_date = None if is_admin else (datetime.now() + timedelta(days=expiry_days)).isoformat()
+
     db.execute(text('''
         INSERT INTO users (`key`, user_id, expiry_date, is_admin)
         VALUES (:key, :user_id, :expiry_date, :is_admin)
-    '''), {"key": key, "user_id": user_id, "expiry_date": expiry_date, "is_admin": bool(is_admin)})
+    '''), {
+        "key": key,
+        "user_id": user_id,
+        "expiry_date": expiry_date,
+        "is_admin": is_admin
+    })
     db.commit()
-    return {"status": "success", "message": f"Key {key} eklendi, admin: {is_admin}, süre: {expiry_days if not is_admin else 'süresiz'}"}
+    return {"status": "success", "message": f"Key {key} eklendi!"}
