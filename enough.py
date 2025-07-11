@@ -13,37 +13,48 @@ def is_enough(phone, email, count, mode):
     sent_count = 0
     failed_count = 0
     total_attempts = 0
-    servis_index = 0
+    servis_index = [0] * min(50, len(servisler_sms))  # 50 paralel istek
 
-    def run_service():
-        nonlocal sent_count, failed_count, total_attempts, servis_index
-        with lock:
-            if total_attempts >= count:
-                return
-            total_attempts += 1
-            func = servisler_sms[servis_index]
-            servis_index = (servis_index + 1) % len(servisler_sms)
-        try:
-            getattr(sms, func)()
+    def run_service(thread_id):
+        nonlocal sent_count, failed_count, total_attempts
+        local_index = 0
+        while True:
             with lock:
-                sent_count += 1
-        except Exception:
-            with lock:
-                failed_count += 1
+                if total_attempts >= count:
+                    return
+                if local_index >= len(servisler_sms):
+                    local_index = 0
+                func = servisler_sms[local_index]
+                local_index += 1
+                total_attempts += 1
+            try:
+                getattr(sms, func)()
+                with lock:
+                    sent_count += 1
+            except Exception:
+                with lock:
+                    failed_count += 1
 
-    batch_size = min(100, count)  # Render için 100’lük batch
     if mode == "turbo":
-        for _ in range(0, count, batch_size):
-            threads = []
-            for _ in range(min(batch_size, count - total_attempts)):
-                t = threading.Thread(target=run_service)
-                threads.append(t)
-                t.start()
-            for t in threads:
-                t.join()
+        threads = []
+        for i in range(min(50, len(servisler_sms))):  # Maks 50 paralel thread
+            t = threading.Thread(target=run_service, args=(i,))
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join()
     else:
         for _ in range(count):
-            run_service()
+            with lock:
+                if total_attempts >= count:
+                    break
+                func = servisler_sms[total_attempts % len(servisler_sms)]
+                total_attempts += 1
+            try:
+                getattr(sms, func)()
+                sent_count += 1
+            except Exception:
+                failed_count += 1
 
     print(f"[+] Başarılı! {sent_count} SMS gönderildi")
     for _ in range(failed_count):
