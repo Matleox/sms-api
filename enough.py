@@ -1,6 +1,5 @@
 from sms import SendSms
 import threading
-import requests
 
 def is_enough(phone, email, count, mode):
     sms = SendSms(phone, email)
@@ -10,50 +9,32 @@ def is_enough(phone, email, count, mode):
         if callable(getattr(SendSms, attr)) and not attr.startswith('__'):
             servisler_sms.append(attr)
 
-    lock = threading.Lock()
     sent_count = 0
     failed_count = 0
-    total_attempts = 0
 
     def run_service(func):
-        nonlocal sent_count, failed_count, total_attempts
-        with lock:
-            if total_attempts >= count:
-                return
-            total_attempts += 1
+        nonlocal sent_count, failed_count
         try:
-            response = getattr(sms, func)()  # Varsayımsal HTTP yanıtı
-            if isinstance(response, requests.Response) and response.status_code == 200:
-                with lock:
-                    sent_count += 1
-            else:
-                with lock:
-                    failed_count += 1
+            getattr(sms, func)()
+            sent_count += 1
         except Exception:
-            with lock:
-                failed_count += 1
+            failed_count += 1  # Hata verirse başarısız say
 
     if mode == "turbo":
-        threads_per_cycle = min(5, len(servisler_sms))  # Render için 5 thread
-        while total_attempts < count:
+        for _ in range(count):
             threads = []
-            for _ in range(min(threads_per_cycle, count - total_attempts)):
-                for func in servisler_sms[:threads_per_cycle]:
-                    if total_attempts >= count:
-                        break
-                    t = threading.Thread(target=run_service, args=(func,))
-                    threads.append(t)
-                    t.start()
+            for func in servisler_sms:
+                t = threading.Thread(target=run_service, args=(func,))
+                threads.append(t)
+                t.start()
             for t in threads:
                 t.join()
     else:
-        while total_attempts < count:
+        for _ in range(count):
             for func in servisler_sms:
-                if total_attempts >= count:
-                    break
                 run_service(func)
 
     print(f"[+] Başarılı! {sent_count} SMS gönderildi")
     for _ in range(failed_count):
         print("[-] Başarısız!")
-    return sent_count, failed_count
+    return sent_count, failed_count  # Başarı ve başarısızlık sayısını döndür
