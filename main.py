@@ -152,18 +152,18 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
         print(f"SMS gönderiliyor - Phone: {phone}, Email: {email}, Count: {count}")
         # enough.is_enough üzerinden tek seferde tüm SMS’leri gönder
         sent_count, failed_count = enough.is_enough(phone=phone, email=email, count=count, mode="turbo" if mode == 2 else "normal")
-        print(f"SMS sonucu - Başarılı: {sent_count}, Başarısız: {failed_count}")
-
-        if not is_admin:
-            db.execute(text("""
-                INSERT INTO sms_limits (user_id, `date`, `count`)
-                VALUES (:user_id, :date, :count)
-                ON DUPLICATE KEY UPDATE `count` = :count
-            """), {"user_id": user_id, "date": today, "count": user_limit + sent_count})
-            db.commit()
+        print(f"SMS sonucu - Başarılı: {sent_count}, Başarısız: {failed_count}, Toplam: {sent_count + failed_count}")
     except Exception as e:
         print(f"SMS Hatası: {e}")
         sent_count, failed_count = 0, count  # Hata durumunda başarısız say
+
+    if not is_admin:
+        db.execute(text("""
+            INSERT INTO sms_limits (user_id, `date`, `count`)
+            VALUES (:user_id, :date, :count)
+            ON DUPLICATE KEY UPDATE `count` = :count
+        """), {"user_id": user_id, "date": today, "count": user_limit + sent_count})
+        db.commit()
 
     return {"status": "success", "success": sent_count, "failed": failed_count}
 
