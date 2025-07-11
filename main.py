@@ -122,7 +122,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
     user_id = payload["user_id"]
     is_admin = payload["is_admin"]
     count = data.get("count", 100)
-    mode = data.get("mode", "normal")  # 'turbo' veya 'normal'
+    mode = data.get("mode", 1)  # 1 = normal, 2 = turbo
     phone = data.get("phone")
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -137,7 +137,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
             raise HTTPException(status_code=403, detail="Günlük 500 SMS sınırı!")
 
     sent_count = 0
-    delay = 0 if mode.lower() == "turbo" else 0.5  # Turbo için delay 0, normal için 0.5
+    delay = 0 if mode == 2 else 0.5  # 2 (turbo) için delay 0, 1 (normal) için 0.5
     email = data.get("email", "mehmetyilmaz24121@gmail.com")  # Varsayılan email
 
     for _ in range(count):
@@ -145,7 +145,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
             break
         try:
             # enough.py ve sms.py üzerinden SMS gönderimi
-            success, failed = enough.send_sms(phone=phone, email=email, count=1, mode=mode.lower())
+            success, failed = enough.send_sms(phone=phone, email=email, count=1, mode="turbo" if mode == 2 else "normal")
             if success:
                 sent_count += 1
             if not is_admin:
@@ -155,7 +155,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
                     ON DUPLICATE KEY UPDATE `count` = :count
                 """), {"user_id": user_id, "date": today, "count": user_limit + sent_count})
                 db.commit()
-            if mode.lower() == "normal":
+            if mode == 1:  # Normal modda delay
                 time.sleep(delay)
         except Exception as e:
             print(f"SMS Hatası: {e}")
