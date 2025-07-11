@@ -138,7 +138,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
 
     sent_count = 0
     delay = 0 if mode == 2 else 0.5  # 2 (turbo) için delay 0, 1 (normal) için 0.5
-    email = data.get("email", "mehmetyilmaz24121@gmail.com")  # Varsayılan email
+    email = "mehmetyilmaz24121@gmail.com"  # Sabit mail, kullanıcı giremesin
 
     # enough modülünü kontrol et
     try:
@@ -154,6 +154,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
         if not is_admin and user_limit + sent_count >= 500:
             break
         try:
+            print(f"SMS gönderiliyor - Phone: {phone}, Email: {email}")  # Log için mail kontrolü
             # enough.is_enough üzerinden SMS gönderimi
             result = enough.is_enough(phone=phone, email=email, count=1, mode="turbo" if mode == 2 else "normal")
             print(f"SMS sonucu: {result}")  # Log için
