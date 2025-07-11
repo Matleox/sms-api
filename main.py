@@ -23,9 +23,9 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://boyleiyi.xyz", "https://boyleiyi.xyz"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"],  # Tüm origin’ler izinli
+    allow_methods=["*"],  # Tüm metodlar izinli
+    allow_headers=["*"],  # Tüm header’lar izinli
 )
 
 engine = create_engine(DATABASE_URL)
