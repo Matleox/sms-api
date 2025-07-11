@@ -234,26 +234,26 @@ async def get_backend_url(db: SessionLocal = Depends(get_db)):
     return {"backend_url": result.value if result else "https://sms-api-qb7q.onrender.com"}
 
 @app.get("/admin/list-users")
-  async def list_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-      if not token:
-          raise HTTPException(status_code=401, detail="Token eksik!")
-      try:
-          payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-      except jwt.exceptions.DecodeError:
-          raise HTTPException(status_code=401, detail="Geçersiz token!")
-      if not payload.get("is_admin", False):
-          raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
-      users = db.execute(text("SELECT `key`, user_id, expiry_date, is_admin FROM users")).fetchall()
-      return [
-          {
-              "id": user[1],
-              "key": user[0],
-              "expiryDate": user[2],
-              "createdAt": (db.execute(text("SELECT MIN(`date`) FROM sms_limits WHERE user_id = :user_id"), {"user_id": user[1]})).fetchone()[0] or datetime.now().isoformat(),
-              "isActive": user[2] and datetime.fromisoformat(user[2]) > datetime.now(),
-              "remainingDays": int((datetime.fromisoformat(user[2]) - datetime.now()).days) if user[2] and datetime.fromisoformat(user[2]) > datetime.now() else 0
-          } for user in users
-      ]
+async def list_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    users = db.execute(text("SELECT `key`, user_id, expiry_date, is_admin FROM users")).fetchall()
+    return [
+        {
+            "id": user[1],
+            "key": user[0],
+            "expiryDate": user[2],
+            "createdAt": (db.execute(text("SELECT MIN(`date`) FROM sms_limits WHERE user_id = :user_id"), {"user_id": user[1]})).fetchone()[0] or datetime.now().isoformat(),
+            "isActive": user[2] and datetime.fromisoformat(user[2]) > datetime.now(),
+            "remainingDays": int((datetime.fromisoformat(user[2]) - datetime.now()).days) if user[2] and datetime.fromisoformat(user[2]) > datetime.now() else 0
+        } for user in users
+    ]
 
 @app.delete("/admin/delete-user")
 async def delete_user(key: str, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
