@@ -24,7 +24,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 # CORS (frontend domainini buraya ekle)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # veya sadece 'http://seninsite.com'
+    allow_origins=["http://boyleiyi.xyz", "https://boyleiyi.xyz"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -70,6 +70,13 @@ def init_db():
             "user_id": "admin",
             "expiry_date": "2099-12-31T23:59:59",
             "is_admin": True
+        })
+        conn.execute(text("""
+            INSERT IGNORE INTO settings (`key`, value)
+            VALUES (:key, :value)
+        """), {
+            "key": "backend_url",
+            "value": "https://sms-api-qb7q.onrender.com"
         })
         conn.commit()
 
@@ -181,3 +188,21 @@ async def test_db(db: SessionLocal = Depends(get_db)):
         return {"status": "DB connected"}
     except Exception as e:
         return {"error": str(e)}
+
+@app.post("/admin/set-backend-url")
+async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    if not payload["is_admin"]:
+        raise HTTPException(status_code=403, detail="Sadece admin backend URL’si ayarlayabilir!")
+    backend_url = data.get("backend_url")
+    if not backend_url:
+        raise HTTPException(status_code=400, detail="Backend URL’si eksik!")
+    db.execute(text("INSERT INTO settings (`key`, value) VALUES (:key, :value) ON DUPLICATE KEY UPDATE value = :value"),
+              {"key": "backend_url", "value": backend_url})
+    db.commit()
+    return {"status": "success", "message": "Backend URL’si kaydedildi"}
+
+@app.get("/get-backend-url")
+async def get_backend_url(db: SessionLocal = Depends(get_db)):
+    result = db.execute(text("SELECT value FROM settings WHERE `key` = :key"), {"key": "backend_url"}).fetchone()
+    return {"backend_url": result.value if result else "https://sms-api-qb7q.onrender.com"}
