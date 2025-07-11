@@ -9,7 +9,7 @@ import os
 import time
 from datetime import datetime, timedelta
 import importlib
-import enough
+import enough  # Güncellenmiş enough.py ile uyumlu
 
 # .env dosyasını yükle
 load_dotenv()
@@ -22,6 +22,7 @@ if not DATABASE_URL:
 app = FastAPI()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
+# CORS (frontend domainini buraya ekle)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://boyleiyi.xyz", "https://boyleiyi.xyz"],
@@ -135,8 +136,9 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
         if user_limit >= 500:
             raise HTTPException(status_code=403, detail="Günlük 500 SMS sınırı!")
 
-    email = "mehmetyilmaz24121@gmail.com"
+    email = "mehmetyilmaz24121@gmail.com"  # Sabit mail
 
+    # enough modülünü kontrol et
     try:
         enough_module = importlib.import_module("enough")
         if not hasattr(enough_module, "is_enough"):
@@ -148,19 +150,20 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
 
     try:
         print(f"SMS gönderiliyor - Phone: {phone}, Email: {email}, Count: {count}")
+        # enough.is_enough üzerinden tek seferde tüm SMS’leri gönder
         sent_count, failed_count = enough.is_enough(phone=phone, email=email, count=count, mode="turbo" if mode == 2 else "normal")
-        print(f"SMS sonucu - Başarılı: {sent_count}, Başarısız: {failed_count}, Toplam: {sent_count + failed_count}")
+        print(f"SMS sonucu - Başarılı: {sent_count}, Başarısız: {failed_count}")
+
+        if not is_admin:
+            db.execute(text("""
+                INSERT INTO sms_limits (user_id, `date`, `count`)
+                VALUES (:user_id, :date, :count)
+                ON DUPLICATE KEY UPDATE `count` = :count
+            """), {"user_id": user_id, "date": today, "count": user_limit + sent_count})
+            db.commit()
     except Exception as e:
         print(f"SMS Hatası: {e}")
-        sent_count, failed_count = 0, count
-
-    if not is_admin:
-        db.execute(text("""
-            INSERT INTO sms_limits (user_id, `date`, `count`)
-            VALUES (:user_id, :date, :count)
-            ON DUPLICATE KEY UPDATE `count` = :count
-        """), {"user_id": user_id, "date": today, "count": user_limit + sent_count})
-        db.commit()
+        sent_count, failed_count = 0, count  # Hata durumunda başarısız say
 
     return {"status": "success", "success": sent_count, "failed": failed_count}
 
