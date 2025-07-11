@@ -186,3 +186,8 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLo
     })
     db.commit()
     return {"status": "success", "message": f"Key {key} eklendi!"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+
