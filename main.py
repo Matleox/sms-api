@@ -136,7 +136,9 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
         if user_limit >= 500:
             raise HTTPException(status_code=403, detail="Günlük 500 SMS sınırı!")
 
-    email = "mehmetyilmaz24121@gmail.com"  # Sabit mail
+    sent_count = 0
+    delay = 0 if mode == 2 else 0.5  # 2 (turbo) için delay 0, 1 (normal) için 0.5
+    email = data.get("email", "mehmetyilmaz24121@gmail.com")  # Varsayılan email
 
     # enough modülünü kontrol et
     try:
@@ -148,24 +150,28 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
     except AttributeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    try:
-        print(f"SMS gönderiliyor - Phone: {phone}, Email: {email}, Count: {count}")
-        # enough.is_enough üzerinden tek seferde tüm SMS’leri gönder
-        sent_count, failed_count = enough.is_enough(phone=phone, email=email, count=count, mode="turbo" if mode == 2 else "normal")
-        print(f"SMS sonucu - Başarılı: {sent_count}, Başarısız: {failed_count}, Toplam: {sent_count + failed_count}")
-    except Exception as e:
-        print(f"SMS Hatası: {e}")
-        sent_count, failed_count = 0, count  # Hata durumunda başarısız say
+    for _ in range(count):
+        if not is_admin and user_limit + sent_count >= 500:
+            break
+        try:
+            # enough.is_enough üzerinden SMS gönderimi
+            result = enough.is_enough(phone=phone, email=email, count=1, mode="turbo" if mode == 2 else "normal")
+            print(f"SMS sonucu: {result}")  # Log için
+            sent_count += 1  # is_enough başarılı döndüyse 1 artır
+            if not is_admin:
+                db.execute(text("""
+                    INSERT INTO sms_limits (user_id, `date`, `count`)
+                    VALUES (:user_id, :date, :count)
+                    ON DUPLICATE KEY UPDATE `count` = :count
+                """), {"user_id": user_id, "date": today, "count": user_limit + sent_count})
+                db.commit()
+            if mode == 1:  # Normal modda delay
+                time.sleep(delay)
+        except Exception as e:
+            print(f"SMS Hatası: {e}")
+            continue
 
-    if not is_admin:
-        db.execute(text("""
-            INSERT INTO sms_limits (user_id, `date`, `count`)
-            VALUES (:user_id, :date, :count)
-            ON DUPLICATE KEY UPDATE `count` = :count
-        """), {"user_id": user_id, "date": today, "count": user_limit + sent_count})
-        db.commit()
-
-    return {"status": "success", "success": sent_count, "failed": failed_count}
+    return {"status": "success", "success": sent_count, "failed": count - sent_count}
 
 @app.post("/admin/add-key")
 async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
