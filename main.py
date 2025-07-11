@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import OAuth2PasswordBearer
 import sqlite3
+import requests
 import jwt
 import time
 from datetime import datetime, timedelta
