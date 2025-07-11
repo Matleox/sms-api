@@ -23,7 +23,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://boyleiyi.xyz", "https://boyleiyi.xyz"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -102,10 +102,17 @@ async def get_api_url(db: SessionLocal = Depends(get_db)):
 
 @app.post("/admin/set-api-url")
 async def set_api_url(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    if not payload["is_admin"]:
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
         raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
     api_url = data.get("api_url")
+    if not api_url:
+        raise HTTPException(status_code=400, detail="API URL’si eksik!")
     db.execute(text("""
         INSERT INTO settings (`key`, value)
         VALUES ('api_url', :value)
@@ -116,9 +123,14 @@ async def set_api_url(data: dict, token: str = Depends(oauth2_scheme), db: Sessi
 
 @app.post("/send-sms")
 async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    user_id = payload["user_id"]
-    is_admin = payload["is_admin"]
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    user_id = payload.get("user_id")
+    is_admin = payload.get("is_admin", False)
     count = data.get("count", 100)
     mode = data.get("mode", 1)
     phone = data.get("phone")
@@ -165,8 +177,13 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
 
 @app.post("/admin/add-key")
 async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    if not payload["is_admin"]:
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
         raise HTTPException(status_code=403, detail="Yetkisiz!")
     key = data.get("key")
     user_id = data.get("user_id")
@@ -195,8 +212,13 @@ async def test_db(db: SessionLocal = Depends(get_db)):
 
 @app.post("/admin/set-backend-url")
 async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    if not payload["is_admin"]:
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
         raise HTTPException(status_code=403, detail="Sadece admin backend URL’si ayarlayabilir!")
     backend_url = data.get("backend_url")
     if not backend_url:
@@ -210,3 +232,16 @@ async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: S
 async def get_backend_url(db: SessionLocal = Depends(get_db)):
     result = db.execute(text("SELECT value FROM settings WHERE `key` = :key"), {"key": "backend_url"}).fetchone()
     return {"backend_url": result.value if result else "https://sms-api-qb7q.onrender.com"}
+
+# Keep API awake
+from fastapi import BackgroundTasks
+import asyncio
+
+async def keep_alive():
+    while True:
+        await asyncio.sleep(300)  # 5 dk
+        print("API awake check!")
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(keep_alive())
