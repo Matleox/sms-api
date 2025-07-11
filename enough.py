@@ -11,27 +11,35 @@ def is_enough(phone, email, count, mode):
 
     sent_count = 0
     failed_count = 0
+    total_attempts = 0  # Toplam deneme sayısını takip et
 
     def run_service(func):
-        nonlocal sent_count, failed_count
+        nonlocal sent_count, failed_count, total_attempts
+        if total_attempts >= count:  # count sınırını kontrol et
+            return
         try:
             getattr(sms, func)()
             sent_count += 1
         except Exception:
-            failed_count += 1  # Hata verirse başarısız say
+            failed_count += 1
+        total_attempts += 1  # Her denemede artır
 
     if mode == "turbo":
-        for _ in range(count):
+        while total_attempts < count:
             threads = []
             for func in servisler_sms:
+                if total_attempts >= count:
+                    break
                 t = threading.Thread(target=run_service, args=(func,))
                 threads.append(t)
                 t.start()
             for t in threads:
                 t.join()
     else:
-        for _ in range(count):
+        while total_attempts < count:
             for func in servisler_sms:
+                if total_attempts >= count:
+                    break
                 run_service(func)
 
     print(f"[+] Başarılı! {sent_count} SMS gönderildi")
