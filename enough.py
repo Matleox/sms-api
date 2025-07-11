@@ -22,7 +22,7 @@ def is_enough(phone, email, count, mode):
                 return
             total_attempts += 1
             func = servisler_sms[servis_index]
-            servis_index = (servis_index + 1) % len(servisler_sms)  # Başa sar
+            servis_index = (servis_index + 1) % len(servisler_sms)
         try:
             getattr(sms, func)()
             with lock:
@@ -31,12 +31,14 @@ def is_enough(phone, email, count, mode):
             with lock:
                 failed_count += 1
 
+    batch_size = min(100, count)  # Render için 100’lük batch
     if mode == "turbo":
-        for _ in range(count):
+        for _ in range(0, count, batch_size):
             threads = []
-            t = threading.Thread(target=run_service)
-            threads.append(t)
-            t.start()
+            for _ in range(min(batch_size, count - total_attempts)):
+                t = threading.Thread(target=run_service)
+                threads.append(t)
+                t.start()
             for t in threads:
                 t.join()
     else:
