@@ -10,17 +10,10 @@ from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 
-load_dotenv()  # .env dosyasını yükle
+load_dotenv()
 
-app = FastAPI()
-SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
-
-# ✅ Doğru MySQL bağlantısı (.env üzerinden)
-DATABASE_URL = (
-    f"mysql+mysqlconnector://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}"
-    f"@{os.getenv('DB_HOST')}/{os.getenv('DB_NAME')}"
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
+engine = create_engine(DATABASE_URL)
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
