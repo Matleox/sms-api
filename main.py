@@ -23,9 +23,9 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Tüm origin’ler izinli
-    allow_methods=["*"],  # Tüm metodlar izinli
-    allow_headers=["*"],  # Tüm header’lar izinli
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 engine = create_engine(DATABASE_URL)
@@ -102,10 +102,17 @@ async def get_api_url(db: SessionLocal = Depends(get_db)):
 
 @app.post("/admin/set-api-url")
 async def set_api_url(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
     if not payload["is_admin"]:
         raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
     api_url = data.get("api_url")
+    if not api_url:
+        raise HTTPException(status_code=400, detail="API URL’si eksik!")
     db.execute(text("""
         INSERT INTO settings (`key`, value)
         VALUES ('api_url', :value)
@@ -195,7 +202,12 @@ async def test_db(db: SessionLocal = Depends(get_db)):
 
 @app.post("/admin/set-backend-url")
 async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
     if not payload["is_admin"]:
         raise HTTPException(status_code=403, detail="Sadece admin backend URL’si ayarlayabilir!")
     backend_url = data.get("backend_url")
