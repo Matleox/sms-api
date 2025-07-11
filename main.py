@@ -8,8 +8,8 @@ import jwt
 import os
 import time
 from datetime import datetime, timedelta
-import enough  # GitHub'dan (https://github.com/Matleox/sms-api)
-import sms     # GitHub'dan (https://github.com/Matleox/sms-api)
+import importlib
+import enough  # Güncellenmiş enough.py ile uyumlu
 
 # .env dosyasını yükle
 load_dotenv()
@@ -140,14 +140,24 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
     delay = 0 if mode == 2 else 0.5  # 2 (turbo) için delay 0, 1 (normal) için 0.5
     email = data.get("email", "mehmetyilmaz24121@gmail.com")  # Varsayılan email
 
+    # enough modülünü kontrol et
+    try:
+        enough_module = importlib.import_module("enough")
+        if not hasattr(enough_module, "is_enough"):
+            raise AttributeError("enough modülünde is_enough fonksiyonu bulunamadı!")
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"enough modülü yüklenemedi: {str(e)}")
+    except AttributeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
     for _ in range(count):
         if not is_admin and user_limit + sent_count >= 500:
             break
         try:
-            # enough.py ve sms.py üzerinden SMS gönderimi
-            success, failed = enough.send_sms(phone=phone, email=email, count=1, mode="turbo" if mode == 2 else "normal")
-            if success:
-                sent_count += 1
+            # enough.is_enough üzerinden SMS gönderimi
+            result = enough.is_enough(phone=phone, email=email, count=1, mode="turbo" if mode == 2 else "normal")
+            print(f"SMS sonucu: {result}")  # Log için
+            sent_count += 1  # is_enough başarılı döndüyse 1 artır
             if not is_admin:
                 db.execute(text("""
                     INSERT INTO sms_limits (user_id, `date`, `count`)
