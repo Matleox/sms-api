@@ -6,9 +6,10 @@ from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 import jwt
 import os
-import requests
 import time
 from datetime import datetime, timedelta
+import enough  # GitHub'dan (https://github.com/Matleox/sms-api)
+import sms     # GitHub'dan (https://github.com/Matleox/sms-api)
 
 # .env dosyasını yükle
 load_dotenv()
@@ -121,7 +122,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
     user_id = payload["user_id"]
     is_admin = payload["is_admin"]
     count = data.get("count", 100)
-    mode = data.get("mode", 1)
+    mode = data.get("mode", "normal")  # 'turbo' veya 'normal'
     phone = data.get("phone")
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -136,14 +137,17 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
             raise HTTPException(status_code=403, detail="Günlük 500 SMS sınırı!")
 
     sent_count = 0
-    delay = 0 if mode == 2 else 0.5
+    delay = 0 if mode.lower() == "turbo" else 0.5  # Turbo için delay 0, normal için 0.5
+    email = data.get("email", "mehmetyilmaz24121@gmail.com")  # Varsayılan email
+
     for _ in range(count):
         if not is_admin and user_limit + sent_count >= 500:
             break
         try:
-            response = requests.post("https://api.bulksms.com/...", json=data)
-            response.raise_for_status()
-            sent_count += 1
+            # enough.py ve sms.py üzerinden SMS gönderimi
+            success, failed = enough.send_sms(phone=phone, email=email, count=1, mode=mode.lower())
+            if success:
+                sent_count += 1
             if not is_admin:
                 db.execute(text("""
                     INSERT INTO sms_limits (user_id, `date`, `count`)
@@ -151,7 +155,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
                     ON DUPLICATE KEY UPDATE `count` = :count
                 """), {"user_id": user_id, "date": today, "count": user_limit + sent_count})
                 db.commit()
-            if mode == 1:
+            if mode.lower() == "normal":
                 time.sleep(delay)
         except Exception as e:
             print(f"SMS Hatası: {e}")
