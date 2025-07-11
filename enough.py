@@ -9,14 +9,19 @@ def is_enough(phone, email, count, mode):
         if callable(getattr(SendSms, attr)) and not attr.startswith('__'):
             servisler_sms.append(attr)
 
+    sent_count = 0
+    failed_count = 0
+
     def run_service(func):
+        nonlocal sent_count, failed_count
         try:
             getattr(sms, func)()
+            sent_count += 1
         except Exception:
-            pass  # servis hata verirse geç
+            failed_count += 1  # Hata verirse başarısız say
 
     if mode == "turbo":
-        for i in range(count):
+        for _ in range(count):
             threads = []
             for func in servisler_sms:
                 t = threading.Thread(target=run_service, args=(func,))
@@ -25,8 +30,11 @@ def is_enough(phone, email, count, mode):
             for t in threads:
                 t.join()
     else:
-        for i in range(count):
+        for _ in range(count):
             for func in servisler_sms:
                 run_service(func)
 
-    return f"{count} adet SMS {mode} modunda gönderildi."
+    print(f"[+] Başarılı! {sent_count} SMS gönderildi")
+    for _ in range(failed_count):
+        print("[-] Başarısız!")
+    return sent_count, failed_count  # Başarı ve başarısızlık sayısını döndür
