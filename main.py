@@ -51,10 +51,17 @@ def init_db():
                 `key` VARCHAR(255) PRIMARY KEY,
                 user_id TEXT,
                 expiry_date TEXT,
-                created_at TEXT,
                 is_admin BOOLEAN
             );
         """))
+        
+        # created_at kolonunu ekle (eğer yoksa)
+        try:
+            conn.execute(text("ALTER TABLE users ADD COLUMN created_at TEXT"))
+            print("created_at kolonu eklendi")
+        except Exception as e:
+            print(f"created_at kolonu zaten var veya eklenemedi: {e}")
+        
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS sms_limits (
                 user_id TEXT,
@@ -62,16 +69,31 @@ def init_db():
                 `count` INTEGER
             );
         """))
-        conn.execute(text("""
-            INSERT IGNORE INTO users (`key`, user_id, expiry_date, created_at, is_admin)
-            VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin);
-        """), {
-            "key": "admin123",
-            "user_id": "admin",
-            "expiry_date": "2099-12-31T23:59:59",
-            "created_at": datetime.now().isoformat(),
-            "is_admin": True
-        })
+        
+        # Admin kullanıcısını ekle (eğer yoksa)
+        try:
+            conn.execute(text("""
+                INSERT IGNORE INTO users (`key`, user_id, expiry_date, created_at, is_admin)
+                VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin);
+            """), {
+                "key": "admin123",
+                "user_id": "admin",
+                "expiry_date": "2099-12-31T23:59:59",
+                "created_at": datetime.now().isoformat(),
+                "is_admin": True
+            })
+        except Exception as e:
+            # Eğer created_at kolonu yoksa, eski yapıyla ekle
+            conn.execute(text("""
+                INSERT IGNORE INTO users (`key`, user_id, expiry_date, is_admin)
+                VALUES (:key, :user_id, :expiry_date, :is_admin);
+            """), {
+                "key": "admin123",
+                "user_id": "admin",
+                "expiry_date": "2099-12-31T23:59:59",
+                "is_admin": True
+            })
+        
         conn.execute(text("""
             INSERT IGNORE INTO settings (`key`, value)
             VALUES (:key, :value)
@@ -114,7 +136,7 @@ async def set_api_url(data: dict, token: str = Depends(oauth2_scheme), db: Sessi
         raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
     api_url = data.get("api_url")
     if not api_url:
-        raise HTTPException(status_code=400, detail="API URL’si eksik!")
+        raise HTTPException(status_code=400, detail="API URL'si eksik!")
     db.execute(text("""
         INSERT INTO settings (`key`, value)
         VALUES ('api_url', :value)
@@ -192,16 +214,31 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLo
     expiry_days = data.get("expiry_days", 0)
     is_admin = data.get("is_admin", False)
     expiry_date = None if is_admin else (datetime.now() + timedelta(days=expiry_days)).isoformat()
-    db.execute(text("""
-        INSERT INTO users (`key`, user_id, expiry_date, created_at, is_admin)
-        VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin)
-    """), {
-        "key": key,
-        "user_id": user_id,
-        "expiry_date": expiry_date,
-        "created_at": datetime.now().isoformat(),
-        "is_admin": is_admin
-    })
+    
+    try:
+        # Önce created_at kolonunun var olup olmadığını kontrol et
+        db.execute(text("""
+            INSERT INTO users (`key`, user_id, expiry_date, created_at, is_admin)
+            VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin)
+        """), {
+            "key": key,
+            "user_id": user_id,
+            "expiry_date": expiry_date,
+            "created_at": datetime.now().isoformat(),
+            "is_admin": is_admin
+        })
+    except Exception as e:
+        # Eğer created_at kolonu yoksa, eski yapıyla ekle
+        db.execute(text("""
+            INSERT INTO users (`key`, user_id, expiry_date, is_admin)
+            VALUES (:key, :user_id, :expiry_date, :is_admin)
+        """), {
+            "key": key,
+            "user_id": user_id,
+            "expiry_date": expiry_date,
+            "is_admin": is_admin
+        })
+    
     db.commit()
     return {"status": "success", "message": "Kullanıcı eklendi"}
 
@@ -225,7 +262,7 @@ async def get_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depe
             "user_id": row.user_id,
             "expiry_date": row.expiry_date,
             "is_admin": row.is_admin,
-            "created_at": row.created_at if hasattr(row, 'created_at') and row.created_at else row.expiry_date
+            "created_at": getattr(row, 'created_at', row.expiry_date) if hasattr(row, 'created_at') else row.expiry_date
         })
     return users
 
