@@ -23,7 +23,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://boyleiyi.xyz", "https://boyleiyi.xyz"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
