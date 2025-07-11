@@ -3,29 +3,35 @@ from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-import jwt
-import requests
-import time
 from datetime import datetime, timedelta
+import requests
+import jwt
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# ENV’den değerleri al
 DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL)
+SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key")
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+if not DATABASE_URL:
+    raise Exception("DATABASE_URL .env içinde tanımlı değil!")
 
-# CORS
+# FastAPI başlat
+app = FastAPI()
+
+# CORS ayarı (ön yüz domainini ekle)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://boyleiyi.xyz"],
-    allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():
     db = SessionLocal()
@@ -34,6 +40,7 @@ def get_db():
     finally:
         db.close()
 
+# İlk başlatmada tabloları oluştur
 def init_db():
     with engine.connect() as conn:
         conn.execute(text('''
@@ -71,7 +78,7 @@ def init_db():
 init_db()
 
 @app.post("/login")
-async def login(data: dict, db: SessionLocal = Depends(get_db)):
+async def login(data: dict, db=Depends(get_db)):
     key = data.get("key")
     result = db.execute(text("SELECT * FROM users WHERE `key` = :key"), {"key": key}).fetchone()
     if not result:
@@ -84,29 +91,28 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
     }, SECRET_KEY, algorithm="HS256")
     return {"access_token": token, "is_admin": result.is_admin}
 
+@app.get("/get-api-url")
+async def get_api_url(db=Depends(get_db)):
+    result = db.execute(text("SELECT value FROM settings WHERE `key` = 'api_url'")).fetchone()
+    return {"api_url": result.value if result else ""}
+
 @app.post("/admin/set-api-url")
-async def set_api_url(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def set_api_url(data: dict, token: str = Depends(oauth2_scheme), db=Depends(get_db)):
     payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     if not payload["is_admin"]:
         raise HTTPException(status_code=403, detail="Sadece admin API URL’si ayarlayabilir!")
     api_url = data.get("api_url")
     if not api_url:
         raise HTTPException(status_code=400, detail="API URL’si eksik!")
-    db.execute(text('''
-        INSERT INTO settings (`key`, value)
-        VALUES (:key, :value)
+    db.execute(text("""
+        INSERT INTO settings (`key`, value) VALUES ('api_url', :value)
         ON DUPLICATE KEY UPDATE value = :value
-    '''), {"key": "api_url", "value": api_url})
+    """), {"value": api_url})
     db.commit()
-    return {"status": "success", "message": "API URL kaydedildi"}
-
-@app.get("/get-api-url")
-async def get_api_url(db: SessionLocal = Depends(get_db)):
-    result = db.execute(text("SELECT value FROM settings WHERE `key` = :key"), {"key": "api_url"}).fetchone()
-    return {"api_url": result.value if result else ""}
+    return {"status": "success", "message": "API URL kaydedildi."}
 
 @app.post("/send-sms")
-async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db=Depends(get_db)):
     payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     user_id = payload["user_id"]
     is_admin = payload["is_admin"]
@@ -132,10 +138,9 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
         if sent_count >= count or (not is_admin and user_limit + sent_count >= 500):
             break
         try:
-            response = requests.post("https://api.bulksms.com/...", json=data)
+            response = requests.post("https://api.bulksms.com/...", json=data)  # burada senin gerçek API endpoint'in olmalı
             response.raise_for_status()
             sent_count += 1
-
             if not is_admin:
                 db.execute(text('''
                     INSERT INTO sms_limits (user_id, `date`, `count`)
@@ -147,27 +152,23 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
                     "count": user_limit + sent_count
                 })
                 db.commit()
-
             if mode == 1:
                 time.sleep(delay)
         except Exception as e:
             print(f"Hata: {e}")
             continue
-
     return {"status": "success", "success": sent_count, "failed": count - sent_count}
 
 @app.post("/admin/add-key")
-async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def add_key(data: dict, token: str = Depends(oauth2_scheme), db=Depends(get_db)):
     payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     if not payload["is_admin"]:
         raise HTTPException(status_code=403, detail="Sadece admin key ekleyebilir!")
-
     key = data.get("key")
     user_id = data.get("user_id")
     expiry_days = data.get("expiry_days", 0)
-    is_admin = data.get("is_admin", False)
-    expiry_date = None if is_admin else (datetime.now() + timedelta(days=expiry_days)).isoformat()
-
+    is_admin = data.get("is_admin", 0)
+    expiry_date = None if is_admin else (datetime.now() + timedelta(days=expiry_days)).isoformat() if expiry_days > 0 else None
     db.execute(text('''
         INSERT INTO users (`key`, user_id, expiry_date, is_admin)
         VALUES (:key, :user_id, :expiry_date, :is_admin)
@@ -175,12 +176,7 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLo
         "key": key,
         "user_id": user_id,
         "expiry_date": expiry_date,
-        "is_admin": is_admin
+        "is_admin": bool(is_admin)
     })
     db.commit()
-    return {"status": "success", "message": f"Key {key} eklendi!"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)
-
+    return {"status": "success", "message": f"Key {key} eklendi."}
