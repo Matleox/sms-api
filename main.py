@@ -62,6 +62,27 @@ def init_db():
         except Exception as e:
             print(f"created_at kolonu zaten var veya eklenemedi: {e}")
         
+        # user_type kolonunu ekle (eğer yoksa)
+        try:
+            conn.execute(text("ALTER TABLE users ADD COLUMN user_type VARCHAR(20) DEFAULT 'normal'"))
+            print("user_type kolonu eklendi")
+        except Exception as e:
+            print(f"user_type kolonu zaten var veya eklenemedi: {e}")
+        
+        # daily_used kolonunu ekle (eğer yoksa)
+        try:
+            conn.execute(text("ALTER TABLE users ADD COLUMN daily_used INTEGER DEFAULT 0"))
+            print("daily_used kolonu eklendi")
+        except Exception as e:
+            print(f"daily_used kolonu zaten var veya eklenemedi: {e}")
+        
+        # last_reset_date kolonunu ekle (eğer yoksa)
+        try:
+            conn.execute(text("ALTER TABLE users ADD COLUMN last_reset_date TEXT"))
+            print("last_reset_date kolonu eklendi")
+        except Exception as e:
+            print(f"last_reset_date kolonu zaten var veya eklenemedi: {e}")
+        
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS sms_limits (
                 user_id TEXT,
@@ -73,26 +94,40 @@ def init_db():
         # Admin kullanıcısını ekle (eğer yoksa)
         try:
             conn.execute(text("""
-                INSERT IGNORE INTO users (`key`, user_id, expiry_date, created_at, is_admin)
-                VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin);
+                INSERT IGNORE INTO users (`key`, user_id, expiry_date, created_at, is_admin, user_type)
+                VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin, :user_type);
             """), {
                 "key": "admin123",
                 "user_id": "admin",
                 "expiry_date": "2099-12-31T23:59:59",
                 "created_at": datetime.now().isoformat(),
-                "is_admin": True
+                "is_admin": True,
+                "user_type": "admin"
             })
         except Exception as e:
-            # Eğer created_at kolonu yoksa, eski yapıyla ekle
-            conn.execute(text("""
-                INSERT IGNORE INTO users (`key`, user_id, expiry_date, is_admin)
-                VALUES (:key, :user_id, :expiry_date, :is_admin);
-            """), {
-                "key": "admin123",
-                "user_id": "admin",
-                "expiry_date": "2099-12-31T23:59:59",
-                "is_admin": True
-            })
+            # Eğer yeni kolonlar yoksa, eski yapıyla ekle
+            try:
+                conn.execute(text("""
+                    INSERT IGNORE INTO users (`key`, user_id, expiry_date, created_at, is_admin)
+                    VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin);
+                """), {
+                    "key": "admin123",
+                    "user_id": "admin",
+                    "expiry_date": "2099-12-31T23:59:59",
+                    "created_at": datetime.now().isoformat(),
+                    "is_admin": True
+                })
+            except Exception as e2:
+                # Eğer created_at kolonu da yoksa, en eski yapıyla ekle
+                conn.execute(text("""
+                    INSERT IGNORE INTO users (`key`, user_id, expiry_date, is_admin)
+                    VALUES (:key, :user_id, :expiry_date, :is_admin);
+                """), {
+                    "key": "admin123",
+                    "user_id": "admin",
+                    "expiry_date": "2099-12-31T23:59:59",
+                    "is_admin": True
+                })
         
         conn.execute(text("""
             INSERT IGNORE INTO settings (`key`, value)
@@ -105,6 +140,37 @@ def init_db():
 
 init_db()
 
+def reset_daily_usage_if_needed(db, user_key):
+    """Günlük kullanımı sıfırla (eğer yeni günse)"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # Kullanıcının son sıfırlama tarihini kontrol et
+    result = db.execute(text("SELECT last_reset_date FROM users WHERE `key` = :key"), {"key": user_key}).fetchone()
+    if result and result.last_reset_date:
+        last_reset = datetime.fromisoformat(result.last_reset_date).strftime("%Y-%m-%d")
+        if last_reset != today:
+            # Yeni gün, kullanımı sıfırla
+            db.execute(text("""
+                UPDATE users 
+                SET daily_used = 0, last_reset_date = :today 
+                WHERE `key` = :key
+            """), {"today": datetime.now().isoformat(), "key": user_key})
+            db.commit()
+            return 0
+        else:
+            # Aynı gün, mevcut kullanımı döndür
+            result = db.execute(text("SELECT daily_used FROM users WHERE `key` = :key"), {"key": user_key}).fetchone()
+            return result.daily_used if result else 0
+    else:
+        # İlk kez kullanım, sıfırla
+        db.execute(text("""
+            UPDATE users 
+            SET daily_used = 0, last_reset_date = :today 
+            WHERE `key` = :key
+        """), {"today": datetime.now().isoformat(), "key": user_key})
+        db.commit()
+        return 0
+
 @app.post("/login")
 async def login(data: dict, db: SessionLocal = Depends(get_db)):
     key = data.get("key")
@@ -113,11 +179,31 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Geçersiz key!")
     if result.expiry_date and datetime.fromisoformat(result.expiry_date) < datetime.now():
         raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
+    
+    # Kullanıcı türünü belirle
+    user_type = getattr(result, 'user_type', None)
+    if not user_type:
+        user_type = 'admin' if result.is_admin else 'normal'
+    
+    # Günlük kullanımı kontrol et ve sıfırla (gerekirse)
+    daily_used = reset_daily_usage_if_needed(db, key)
+    
+    # Günlük limiti belirle
+    daily_limit = 0 if result.is_admin or user_type == 'premium' else 500
+    
     token = jwt.encode({
         "user_id": result.user_id,
-        "is_admin": result.is_admin
+        "is_admin": result.is_admin,
+        "user_type": user_type
     }, SECRET_KEY, algorithm="HS256")
-    return {"access_token": token, "is_admin": result.is_admin}
+    
+    return {
+        "access_token": token, 
+        "is_admin": result.is_admin,
+        "user_type": user_type,
+        "daily_limit": daily_limit,
+        "daily_used": daily_used
+    }
 
 @app.get("/get-api-url")
 async def get_api_url(db: SessionLocal = Depends(get_db)):
@@ -153,21 +239,21 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     except jwt.exceptions.DecodeError:
         raise HTTPException(status_code=401, detail="Geçersiz token!")
+    
     user_id = payload.get("user_id")
     is_admin = payload.get("is_admin", False)
+    user_type = payload.get("user_type", "normal")
     count = data.get("count", 100)
     mode = data.get("mode", 1)
     phone = data.get("phone")
-    today = datetime.now().strftime("%Y-%m-%d")
 
     if not phone:
         raise HTTPException(status_code=400, detail="Telefon eksik!")
 
-    if not is_admin:
-        result = db.execute(text("SELECT `count` FROM sms_limits WHERE user_id = :user_id AND `date` = :date"),
-                            {"user_id": user_id, "date": today}).fetchone()
-        user_limit = result.count if result else 0
-        if user_limit >= 500:
+    # Günlük limit kontrolü (sadece normal kullanıcılar için)
+    if not is_admin and user_type == "normal":
+        daily_used = reset_daily_usage_if_needed(db, user_id)
+        if daily_used >= 500:
             raise HTTPException(status_code=403, detail="Günlük 500 SMS sınırı!")
 
     email = "mehmetyilmaz24121@gmail.com"
@@ -189,12 +275,14 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
         print(f"SMS Hatası: {e}")
         sent_count, failed_count = 0, count
 
-    if not is_admin:
+    # Günlük kullanımı güncelle (sadece normal kullanıcılar için)
+    if not is_admin and user_type == "normal":
+        current_used = reset_daily_usage_if_needed(db, user_id)
         db.execute(text("""
-            INSERT INTO sms_limits (user_id, `date`, `count`)
-            VALUES (:user_id, :date, :count)
-            ON DUPLICATE KEY UPDATE `count` = :count
-        """), {"user_id": user_id, "date": today, "count": user_limit + sent_count})
+            UPDATE users 
+            SET daily_used = :daily_used 
+            WHERE `key` = :user_id
+        """), {"daily_used": current_used + sent_count, "user_id": user_id})
         db.commit()
 
     return {"status": "success", "success": sent_count, "failed": failed_count}
@@ -209,35 +297,53 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLo
         raise HTTPException(status_code=401, detail="Geçersiz token!")
     if not payload.get("is_admin", False):
         raise HTTPException(status_code=403, detail="Yetkisiz!")
+    
     key = data.get("key")
     user_id = data.get("user_id")
     expiry_days = data.get("expiry_days", 0)
     is_admin = data.get("is_admin", False)
+    user_type = data.get("user_type", "normal")
     expiry_date = None if is_admin else (datetime.now() + timedelta(days=expiry_days)).isoformat()
     
     try:
-        # Önce created_at kolonunun var olup olmadığını kontrol et
+        # Yeni kolonlarla ekle
         db.execute(text("""
-            INSERT INTO users (`key`, user_id, expiry_date, created_at, is_admin)
-            VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin)
+            INSERT INTO users (`key`, user_id, expiry_date, created_at, is_admin, user_type, daily_used, last_reset_date)
+            VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin, :user_type, :daily_used, :last_reset_date)
         """), {
             "key": key,
             "user_id": user_id,
             "expiry_date": expiry_date,
             "created_at": datetime.now().isoformat(),
-            "is_admin": is_admin
+            "is_admin": is_admin,
+            "user_type": user_type,
+            "daily_used": 0,
+            "last_reset_date": datetime.now().isoformat()
         })
     except Exception as e:
-        # Eğer created_at kolonu yoksa, eski yapıyla ekle
-        db.execute(text("""
-            INSERT INTO users (`key`, user_id, expiry_date, is_admin)
-            VALUES (:key, :user_id, :expiry_date, :is_admin)
-        """), {
-            "key": key,
-            "user_id": user_id,
-            "expiry_date": expiry_date,
-            "is_admin": is_admin
-        })
+        # Eğer yeni kolonlar yoksa, eski yapıyla ekle
+        try:
+            db.execute(text("""
+                INSERT INTO users (`key`, user_id, expiry_date, created_at, is_admin)
+                VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin)
+            """), {
+                "key": key,
+                "user_id": user_id,
+                "expiry_date": expiry_date,
+                "created_at": datetime.now().isoformat(),
+                "is_admin": is_admin
+            })
+        except Exception as e2:
+            # Eğer created_at kolonu da yoksa, en eski yapıyla ekle
+            db.execute(text("""
+                INSERT INTO users (`key`, user_id, expiry_date, is_admin)
+                VALUES (:key, :user_id, :expiry_date, :is_admin)
+            """), {
+                "key": key,
+                "user_id": user_id,
+                "expiry_date": expiry_date,
+                "is_admin": is_admin
+            })
     
     db.commit()
     return {"status": "success", "message": "Kullanıcı eklendi"}
@@ -256,12 +362,26 @@ async def get_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depe
     result = db.execute(text("SELECT * FROM users ORDER BY expiry_date DESC")).fetchall()
     users = []
     for row in result:
+        # Kullanıcı türünü belirle
+        user_type = getattr(row, 'user_type', None)
+        if not user_type:
+            user_type = 'admin' if row.is_admin else 'normal'
+        
+        # Günlük limiti belirle
+        daily_limit = 0 if row.is_admin or user_type == 'premium' else 500
+        
+        # Günlük kullanımı al
+        daily_used = getattr(row, 'daily_used', 0) or 0
+        
         users.append({
             "id": row.key,  # key'i id olarak kullan
             "key": row.key,
             "user_id": row.user_id,
             "expiry_date": row.expiry_date,
             "is_admin": row.is_admin,
+            "user_type": user_type,
+            "daily_limit": daily_limit,
+            "daily_used": daily_used,
             "created_at": getattr(row, 'created_at', row.expiry_date) if hasattr(row, 'created_at') else row.expiry_date
         })
     return users
@@ -327,4 +447,4 @@ async def keep_alive():
 
 @app.on_event("startup")
 async def startup_event():
-    print("API Başlatıldı!")
+    print("API Başlatıldı!") 
