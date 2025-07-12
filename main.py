@@ -359,7 +359,7 @@ async def get_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depe
     if not payload.get("is_admin", False):
         raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
     
-    result = db.execute(text("SELECT * FROM users ORDER BY expiry_date DESC")).fetchall()
+    result = db.execute(text("SELECT * FROM users ORDER BY created_at DESC")).fetchall()
     users = []
     for row in result:
         # Kullanıcı türünü belirle
