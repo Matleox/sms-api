@@ -240,7 +240,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
     except jwt.exceptions.DecodeError:
         raise HTTPException(status_code=401, detail="Geçersiz token!")
     
-    user_id = payload.get("user_id")
+    user_key = payload.get("user_id")
     is_admin = payload.get("is_admin", False)
     user_type = payload.get("user_type", "normal")
     count = data.get("count", 100)
