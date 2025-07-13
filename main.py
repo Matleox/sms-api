@@ -325,7 +325,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
 
     try:
         print(f"SMS gönderiliyor - Phone: {phone}, Email: {email}, Count: {count}")
-        sent_count, failed_count = enough.is_enough(phone=phone, email=email, count=count, mode="turbo" if mode == 2 else "normal")
+        sent_count, failed_count = enough_module.is_enough(phone=phone, email=email, count=count, mode="turbo" if mode == 2 else "normal")
         print(f"SMS sonucu - Başarılı: {sent_count}, Başarısız: {failed_count}, Toplam: {sent_count + failed_count}")
     except Exception as e:
         print(f"SMS Hatası: {e}")
