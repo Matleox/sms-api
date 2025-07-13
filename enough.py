@@ -236,6 +236,53 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
         "daily_used": daily_used
     }
 
+@app.get("/user/info")
+async def get_user_info(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    """Login olan kullanıcının kendi bilgilerini döndür"""
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    
+    user_key = payload.get("user_id")
+    if not user_key:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    
+    # Kullanıcı bilgilerini veritabanından çek
+    result = db.execute(text("""
+        SELECT `key`, user_id, expiry_date, created_at, is_admin, user_type, daily_used
+        FROM users WHERE `key` = :key
+    """), {"key": user_key}).fetchone()
+    
+    if not result:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı!")
+    
+    # Kalan günleri hesapla
+    expiry_date = result.expiry_date
+    if expiry_date:
+        try:
+            expiry = datetime.fromisoformat(expiry_date)
+            today = datetime.now()
+            remaining_days = max(0, (expiry - today).days)
+        except:
+            remaining_days = 0
+    else:
+        remaining_days = 0
+    
+    return {
+        "key": result.key,
+        "user_id": result.user_id,
+        "tag": result.user_id,  # Tag olarak user_id kullan
+        "expiry_date": result.expiry_date,
+        "created_at": result.created_at,
+        "is_admin": result.is_admin,
+        "user_type": result.user_type or "normal",
+        "daily_used": result.daily_used or 0,
+        "remaining_days": remaining_days
+    }
+
 @app.get("/get-api-url")
 async def get_api_url():
     return {"api_url": SMS_API_URL or ""}
