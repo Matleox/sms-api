@@ -18,6 +18,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")
 RECAPTCHA_SECRET_KEY = os.getenv("RECAPTCHA_SECRET_KEY")
 RECAPTCHA_SITE_KEY = os.getenv("RECAPTCHA_SITE_KEY")
+SMS_API_URL = os.getenv("SMS_API_URL")
+BACKEND_URL = os.getenv("BACKEND_URL", "https://sms-api-qb7q.onrender.com")
 
 if not DATABASE_URL:
     raise Exception("DATABASE_URL environment variable not set!")
@@ -298,7 +300,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
 
     try:
         print(f"SMS gönderiliyor - Phone: {phone}, Email: {email}, Count: {count}")
-        sent_count, failed_count = enough.is_enough(phone=phone, email=email, count=count, mode="turbo" if mode == 2 else "normal")
+        sent_count, failed_count = enough_module.is_enough(phone=phone, email=email, count=count, mode="turbo" if mode == 2 else "normal")
         print(f"SMS sonucu - Başarılı: {sent_count}, Başarısız: {failed_count}, Toplam: {sent_count + failed_count}")
     except Exception as e:
         print(f"SMS Hatası: {e}")
