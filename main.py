@@ -237,9 +237,8 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
     }
 
 @app.get("/get-api-url")
-async def get_api_url(db: SessionLocal = Depends(get_db)):
-    result = db.execute(text("SELECT value FROM settings WHERE `key` = 'api_url'")).fetchone()
-    return {"api_url": result.value if result else ""}
+async def get_api_url():
+    return {"api_url": SMS_API_URL or ""}
 
 @app.post("/admin/set-api-url")
 async def set_api_url(data: dict, token: str = Depends(oauth2_scheme)):
@@ -326,7 +325,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
 
     try:
         print(f"SMS gönderiliyor - Phone: {phone}, Email: {email}, Count: {count}")
-        sent_count, failed_count = enough_module.is_enough(phone=phone, email=email, count=count, mode="turbo" if mode == 2 else "normal")
+        sent_count, failed_count = enough.is_enough(phone=phone, email=email, count=count, mode="turbo" if mode == 2 else "normal")
         print(f"SMS sonucu - Başarılı: {sent_count}, Başarısız: {failed_count}, Toplam: {sent_count + failed_count}")
     except Exception as e:
         print(f"SMS Hatası: {e}")
