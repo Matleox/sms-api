@@ -8,7 +8,6 @@ import jwt
 import os
 import time
 import requests
-import redis
 from datetime import datetime, timedelta
 import importlib
 import enough
@@ -24,16 +23,6 @@ BACKEND_URL = os.getenv("BACKEND_URL", "https://sms-api-qb7q.onrender.com")
 
 if not DATABASE_URL:
     raise Exception("DATABASE_URL environment variable not set!")
-
-# Redis bağlantısı (opsiyonel - Redis yoksa çalışmaya devam eder)
-try:
-    redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
-    redis_client.ping()  # Bağlantıyı test et
-    REDIS_AVAILABLE = True
-    print("Redis bağlantısı başarılı!")
-except:
-    REDIS_AVAILABLE = False
-    print("Redis bulunamadı, cache devre dışı.")
 
 app = FastAPI()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
@@ -54,34 +43,6 @@ def get_db():
         yield db
     finally:
         db.close()
-
-def get_cache(key: str, default=None):
-    """Cache'den veri al"""
-    if not REDIS_AVAILABLE:
-        return default
-    try:
-        data = redis_client.get(key)
-        return data if data else default
-    except:
-        return default
-
-def set_cache(key: str, value: str, expire: int = 300):
-    """Cache'e veri kaydet (5 dakika varsayılan)"""
-    if not REDIS_AVAILABLE:
-        return
-    try:
-        redis_client.setex(key, expire, value)
-    except:
-        pass
-
-def delete_cache(key: str):
-    """Cache'den veri sil"""
-    if not REDIS_AVAILABLE:
-        return
-    try:
-        redis_client.delete(key)
-    except:
-        pass
 
 def init_db():
     with engine.connect() as conn:
@@ -441,10 +402,6 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLo
             })
     
     db.commit()
-    
-    # Cache'i temizle
-    delete_cache("admin_users")
-    
     return {"status": "success", "message": "Kullanıcı eklendi"}
 
 @app.get("/admin/users")
@@ -458,15 +415,6 @@ async def get_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depe
     if not payload.get("is_admin", False):
         raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
     
-    # Cache'den kullanıcıları al
-    cache_key = "admin_users"
-    cached_users = get_cache(cache_key)
-    
-    if cached_users:
-        import json
-        return json.loads(cached_users)
-    
-    # Cache'de yoksa veritabanından al
     result = db.execute(text("SELECT * FROM users ORDER BY created_at DESC")).fetchall()
     users = []
     for row in result:
@@ -492,11 +440,6 @@ async def get_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depe
             "daily_used": daily_used,
             "created_at": getattr(row, 'created_at', row.expiry_date) if hasattr(row, 'created_at') else row.expiry_date
         })
-    
-    # Cache'e kaydet (2 dakika)
-    import json
-    set_cache(cache_key, json.dumps(users), 120)
-    
     return users
 
 @app.delete("/admin/users/{user_id}")
@@ -518,10 +461,6 @@ async def delete_user(user_id: str, token: str = Depends(oauth2_scheme), db: Ses
     # Kullanıcıyı sil
     db.execute(text("DELETE FROM users WHERE `key` = :user_id"), {"user_id": user_id})
     db.commit()
-    
-    # Cache'i temizle
-    delete_cache("admin_users")
-    
     return {"status": "success", "message": "Kullanıcı silindi"}
 
 @app.get("/test-db")
