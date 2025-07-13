@@ -237,8 +237,9 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
     }
 
 @app.get("/get-api-url")
-async def get_api_url():
-    return {"api_url": SMS_API_URL or ""}
+async def get_api_url(db: SessionLocal = Depends(get_db)):
+    result = db.execute(text("SELECT value FROM settings WHERE `key` = 'api_url'")).fetchone()
+    return {"api_url": result.value if result else ""}
 
 @app.post("/admin/set-api-url")
 async def set_api_url(data: dict, token: str = Depends(oauth2_scheme)):
