@@ -1,7 +1,7 @@
 sent_count = 0
 failed_count = 0
 total_attempts = 0
-    servis_index = 0
+servis_index = 0
 
     def run_service(thread_id):
         nonlocal sent_count, failed_count, total_attempts
