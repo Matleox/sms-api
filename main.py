@@ -237,12 +237,11 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
     }
 
 @app.get("/get-api-url")
-async def get_api_url(db: SessionLocal = Depends(get_db)):
-    result = db.execute(text("SELECT value FROM settings WHERE `key` = 'api_url'")).fetchone()
-    return {"api_url": result.value if result else ""}
+async def get_api_url():
+    return {"api_url": SMS_API_URL or ""}
 
 @app.post("/admin/set-api-url")
-async def set_api_url(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def set_api_url(data: dict, token: str = Depends(oauth2_scheme)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
@@ -251,16 +250,42 @@ async def set_api_url(data: dict, token: str = Depends(oauth2_scheme), db: Sessi
         raise HTTPException(status_code=401, detail="Geçersiz token!")
     if not payload.get("is_admin", False):
         raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    
     api_url = data.get("api_url")
     if not api_url:
         raise HTTPException(status_code=400, detail="API URL'si eksik!")
-    db.execute(text("""
-        INSERT INTO settings (`key`, value)
-        VALUES ('api_url', :value)
-        ON DUPLICATE KEY UPDATE value = :value
-    """), {"value": api_url})
-    db.commit()
-    return {"status": "success", "message": "API URL kaydedildi"}
+    
+    # .env dosyasını güncelle
+    try:
+        env_path = ".env"
+        if os.path.exists(env_path):
+            with open(env_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            # Mevcut SMS_API_URL satırını güncelle veya ekle
+            api_url_updated = False
+            
+            for i, line in enumerate(lines):
+                if line.startswith("SMS_API_URL="):
+                    lines[i] = f"SMS_API_URL={api_url}\n"
+                    api_url_updated = True
+            
+            # Eğer satır yoksa ekle
+            if not api_url_updated:
+                lines.append(f"SMS_API_URL={api_url}\n")
+            
+            with open(env_path, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+            
+            # Global değişkeni güncelle
+            global SMS_API_URL
+            SMS_API_URL = api_url
+            
+            return {"status": "success", "message": "SMS API URL kaydedildi"}
+        else:
+            raise HTTPException(status_code=500, detail="`.env` dosyası bulunamadı!")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Güncelleme hatası: {str(e)}")
 
 @app.post("/send-sms")
 async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
@@ -468,9 +493,8 @@ async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: S
     return {"status": "success", "message": "Backend URL kaydedildi"}
 
 @app.get("/get-backend-url")
-async def get_backend_url(db: SessionLocal = Depends(get_db)):
-    result = db.execute(text("SELECT value FROM settings WHERE `key` = 'backend_url'")).fetchone()
-    return {"backend_url": result.value if result else ""}
+async def get_backend_url():
+    return {"backend_url": BACKEND_URL}
 
 @app.get("/get-recaptcha-site-key")
 async def get_recaptcha_site_key():
