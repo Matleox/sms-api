@@ -564,6 +564,7 @@ async def keep_alive():
 async def startup_event():
     print("API Başlatıldı!") 
 
-@app.get("/test")
-async def test():
-    return {"message": "Çalışıyor!"}
+@app.api_route("/live", methods=["GET", "HEAD"])
+async def live():
+    print("API uyandırıldı!")
+    return {"status": "alive"}
