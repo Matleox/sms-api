@@ -563,3 +563,7 @@ async def keep_alive():
 @app.on_event("startup")
 async def startup_event():
     print("API Başlatıldı!") 
+
+@app.get("/test")
+async def test():
+    return {"message": "Çalışıyor!"}
