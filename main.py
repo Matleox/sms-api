@@ -564,13 +564,18 @@ async def keep_alive():
 async def startup_event():
     print("API Başlatıldı!") 
 
+@app.get("/status")
+async def status():
+    return {"status": "online"}
+
 from fastapi import BackgroundTasks
 import asyncio
+import requests
 
 async def keep_alive():
     while True:
         await asyncio.sleep(300)  # 5 dk
-        # Zararsız istek
+        requests.get("https://sms-api-qb7q.onrender.com/status")
         print("API awake check!")
 
 @app.on_event("startup")
