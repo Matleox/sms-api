@@ -563,3 +563,16 @@ async def keep_alive():
 @app.on_event("startup")
 async def startup_event():
     print("API Başlatıldı!") 
+
+from fastapi import BackgroundTasks
+import asyncio
+
+async def keep_alive():
+    while True:
+        await asyncio.sleep(300)  # 5 dk
+        # Zararsız istek
+        print("API awake check!")
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(keep_alive())
