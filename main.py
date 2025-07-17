@@ -11,6 +11,10 @@ import requests
 from datetime import datetime, timedelta
 import importlib
 import enough
+import pyotp
+import qrcode
+import base64
+from io import BytesIO
 
 load_dotenv()
 
@@ -118,6 +122,35 @@ def refresh_token(payload):
 
 
 
+# .env'den veya otomatik secret üret
+ADMIN_2FA_SECRET = os.getenv("ADMIN_2FA_SECRET")
+if not ADMIN_2FA_SECRET:
+    ADMIN_2FA_SECRET = pyotp.random_base32()
+    # İstersen burada .env'ye yazabilirsin
+    print(f"[2FA] Admin için yeni secret üretildi: {ADMIN_2FA_SECRET}")
+
+# QR kod endpointi (ilk kurulum için)
+@app.get("/admin/2fa-setup")
+def admin_2fa_setup():
+    totp = pyotp.TOTP(ADMIN_2FA_SECRET)
+    uri = totp.provisioning_uri(name="admin@panel", issuer_name="SMS Panel")
+    img = qrcode.make(uri)
+    buf = BytesIO()
+    img.save(buf, format='PNG')
+    img_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    return {"qr": f"data:image/png;base64,{img_b64}", "secret": ADMIN_2FA_SECRET}
+
+# 2FA kod doğrulama endpointi
+@app.post("/admin/2fa-verify")
+def admin_2fa_verify(data: dict):
+    code = data.get("code")
+    totp = pyotp.TOTP(ADMIN_2FA_SECRET)
+    if totp.verify(code):
+        return {"status": "success"}
+    else:
+        return {"status": "fail"}
+
+# Login fonksiyonunu güncelle: admin ise 2FA zorunlu
 @app.post("/login")
 async def login(data: dict, db: SessionLocal = Depends(get_db)):
     key = data.get("key")
@@ -138,19 +171,24 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
     if not user_type:
         user_type = 'admin' if result.is_admin else 'normal'
     
+    # Eğer admin ise ve 2FA kodu yoksa, 2FA zorunlu
+    if (result.is_admin or user_type == 'admin') and not data.get("twofa_code"):
+        return {"require_2fa": True}
+    # Eğer admin ise ve 2FA kodu varsa, doğrula
+    if (result.is_admin or user_type == 'admin') and data.get("twofa_code"):
+        totp = pyotp.TOTP(ADMIN_2FA_SECRET)
+        if not totp.verify(data.get("twofa_code")):
+            raise HTTPException(status_code=401, detail="2FA kodu hatalı!")
+    
     # Günlük kullanımı kontrol et ve sıfırla (gerekirse)
     daily_used = reset_daily_usage_if_needed(db, key)
-    
-    # Günlük limiti belirle
     daily_limit = 0 if result.is_admin or user_type == 'premium' else 500
-    
     token = jwt.encode({
         "user_id": result.user_id,
         "is_admin": result.is_admin,
         "user_type": user_type,
         "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
-    
     return {
         "access_token": token, 
         "is_admin": result.is_admin,
