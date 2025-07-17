@@ -183,13 +183,14 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
     
     try:
         result = db.execute(text("SELECT * FROM users WHERE `key` = :key"), {"key": key}).fetchone()
-        if not result:
-            raise HTTPException(status_code=401, detail="Geçersiz key!")
-        if result.expiry_date and datetime.fromisoformat(result.expiry_date) < datetime.now():
-            raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
     except Exception as e:
         print(f"Database error: {e}")
         raise HTTPException(status_code=401, detail="Geçersiz key!")
+    
+    if not result:
+        raise HTTPException(status_code=401, detail="Geçersiz key!")
+    if result.expiry_date and datetime.fromisoformat(result.expiry_date) < datetime.now():
+        raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
     
     # Kullanıcı türünü belirle
     user_type = getattr(result, 'user_type', None)
