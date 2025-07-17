@@ -8,6 +8,10 @@ import jwt
 import os
 import time
 import requests
+import pyotp
+import qrcode
+import io
+import base64
 from datetime import datetime, timedelta
 import importlib
 import enough
@@ -55,7 +59,9 @@ def init_db():
                 `key` VARCHAR(255) PRIMARY KEY,
                 user_id TEXT,
                 expiry_date TEXT,
-                is_admin BOOLEAN
+                is_admin BOOLEAN,
+                two_fa_secret TEXT,
+                two_fa_enabled BOOLEAN DEFAULT FALSE
             );
         """))
         conn.execute(text("""
@@ -144,6 +150,23 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
     # Günlük limiti belirle
     daily_limit = 0 if result.is_admin or user_type == 'premium' else 500
     
+    # 2FA kontrolü
+    two_fa_enabled = getattr(result, 'two_fa_enabled', False)
+    if result.is_admin and two_fa_enabled:
+        # 2FA gerekli, geçici token oluştur
+        temp_token = jwt.encode({
+            "user_id": result.user_id,
+            "is_admin": result.is_admin,
+            "user_type": user_type,
+            "temp": True,
+            "exp": datetime.utcnow() + timedelta(minutes=5)  # 5 dakika geçerli
+        }, SECRET_KEY, algorithm="HS256")
+        
+        return {
+            "requires_2fa": True,
+            "temp_token": temp_token
+        }
+    
     token = jwt.encode({
         "user_id": result.user_id,
         "is_admin": result.is_admin,
@@ -157,6 +180,220 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
         "user_type": user_type,
         "daily_limit": daily_limit,
         "daily_used": daily_used
+    }
+
+@app.post("/verify-2fa")
+async def verify_2fa(data: dict, db: SessionLocal = Depends(get_db)):
+    temp_token = data.get("temp_token")
+    code = data.get("code")
+    
+    if not temp_token or not code:
+        raise HTTPException(status_code=400, detail="Token ve kod gerekli!")
+    
+    try:
+        payload = jwt.decode(temp_token, SECRET_KEY, algorithms=["HS256"])
+        if not payload.get("temp"):
+            raise HTTPException(status_code=401, detail="Geçersiz token!")
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    
+    user_id = payload.get("user_id")
+    result = db.execute(text("SELECT * FROM users WHERE user_id = :user_id"), {"user_id": user_id}).fetchone()
+    
+    if not result:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı!")
+    
+    # 2FA kodunu doğrula
+    two_fa_secret = getattr(result, 'two_fa_secret', None)
+    if not two_fa_secret:
+        raise HTTPException(status_code=401, detail="2FA kurulmamış!")
+    
+    totp = pyotp.TOTP(two_fa_secret)
+    if not totp.verify(code):
+        raise HTTPException(status_code=401, detail="Geçersiz 2FA kodu!")
+    
+    # Günlük kullanımı kontrol et
+    daily_used = reset_daily_usage_if_needed(db, result.key)
+    
+    # Kullanıcı türünü belirle
+    user_type = getattr(result, 'user_type', None)
+    if not user_type:
+        user_type = 'admin' if result.is_admin else 'normal'
+    
+    # Günlük limiti belirle
+    daily_limit = 0 if result.is_admin or user_type == 'premium' else 500
+    
+    # Gerçek token oluştur
+    token = jwt.encode({
+        "user_id": result.user_id,
+        "is_admin": result.is_admin,
+        "user_type": user_type,
+        "exp": datetime.utcnow() + timedelta(minutes=30)
+    }, SECRET_KEY, algorithm="HS256")
+    
+    return {
+        "access_token": token,
+        "is_admin": result.is_admin,
+        "user_type": user_type,
+        "daily_limit": daily_limit,
+        "daily_used": daily_used
+    }
+
+@app.get("/admin/2fa-status")
+async def get_2fa_status(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    
+    user_id = payload.get("user_id")
+    result = db.execute(text("SELECT two_fa_enabled FROM users WHERE user_id = :user_id"), {"user_id": user_id}).fetchone()
+    
+    return {
+        "status": "success",
+        "enabled": getattr(result, 'two_fa_enabled', False) if result else False
+    }
+
+@app.post("/admin/enable-2fa")
+async def enable_2fa(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    
+    user_id = payload.get("user_id")
+    
+    # Secret oluştur
+    secret = pyotp.random_base32()
+    
+    # QR kod oluştur
+    totp_uri = pyotp.totp.TOTP(secret).provisioning_uri(
+        name=user_id,
+        issuer_name="SMS Gönderim Sistemi"
+    )
+    
+    qr = qrcode.QRCode(version=1, box_size=10, border=5)
+    qr.add_data(totp_uri)
+    qr.make(fit=True)
+    
+    img = qr.make_image(fill_color="black", back_color="white")
+    img_buffer = io.BytesIO()
+    img.save(img_buffer, format='PNG')
+    img_buffer.seek(0)
+    
+    qr_code_base64 = base64.b64encode(img_buffer.getvalue()).decode()
+    qr_code_url = f"data:image/png;base64,{qr_code_base64}"
+    
+    # Secret'i veritabanına kaydet (henüz aktif etme)
+    try:
+        db.execute(text("""
+            UPDATE users 
+            SET two_fa_secret = :secret 
+            WHERE user_id = :user_id
+        """), {"secret": secret, "user_id": user_id})
+        db.commit()
+    except Exception as e:
+        # Eğer kolon yoksa, önce kolonu ekle
+        try:
+            db.execute(text("ALTER TABLE users ADD COLUMN two_fa_secret TEXT"))
+            db.execute(text("ALTER TABLE users ADD COLUMN two_fa_enabled BOOLEAN DEFAULT FALSE"))
+            db.commit()
+            
+            db.execute(text("""
+                UPDATE users 
+                SET two_fa_secret = :secret 
+                WHERE user_id = :user_id
+            """), {"secret": secret, "user_id": user_id})
+            db.commit()
+        except Exception as e2:
+            raise HTTPException(status_code=500, detail="Veritabanı hatası!")
+    
+    return {
+        "status": "success",
+        "qr_code": qr_code_url
+    }
+
+@app.post("/admin/confirm-2fa")
+async def confirm_2fa(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    
+    user_id = payload.get("user_id")
+    code = data.get("code")
+    
+    if not code:
+        raise HTTPException(status_code=400, detail="Kod gerekli!")
+    
+    # Secret'i al
+    result = db.execute(text("SELECT two_fa_secret FROM users WHERE user_id = :user_id"), {"user_id": user_id}).fetchone()
+    
+    if not result or not result.two_fa_secret:
+        raise HTTPException(status_code=400, detail="2FA kurulumu başlatılmamış!")
+    
+    # Kodu doğrula
+    totp = pyotp.TOTP(result.two_fa_secret)
+    if not totp.verify(code):
+        raise HTTPException(status_code=400, detail="Geçersiz kod!")
+    
+    # 2FA'yı aktif et
+    db.execute(text("""
+        UPDATE users 
+        SET two_fa_enabled = TRUE 
+        WHERE user_id = :user_id
+    """), {"user_id": user_id})
+    db.commit()
+    
+    # Token'ı yenile
+    new_token = refresh_token(payload)
+    
+    return {
+        "status": "success",
+        "message": "2FA başarıyla aktif edildi!",
+        "new_token": new_token
+    }
+
+@app.post("/admin/disable-2fa")
+async def disable_2fa(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    
+    user_id = payload.get("user_id")
+    
+    # 2FA'yı deaktif et ve secret'i sil
+    db.execute(text("""
+        UPDATE users 
+        SET two_fa_enabled = FALSE, two_fa_secret = NULL 
+        WHERE user_id = :user_id
+    """), {"user_id": user_id})
+    db.commit()
+    
+    # Token'ı yenile
+    new_token = refresh_token(payload)
+    
+    return {
+        "status": "success",
+        "message": "2FA başarıyla deaktif edildi!",
+        "new_token": new_token
     }
 
 @app.get("/get-api-url")
@@ -265,203 +502,4 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
         db.commit()
 
     # Token'ı yenile
-    new_token = refresh_token(payload)
-
-    return {
-        "status": "success", 
-        "success": sent_count, 
-        "failed": failed_count,
-        "new_token": new_token
-    }
-
-@app.post("/admin/add-key")
-async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    if not token:
-        raise HTTPException(status_code=401, detail="Token eksik!")
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except jwt.exceptions.DecodeError:
-        raise HTTPException(status_code=401, detail="Geçersiz token!")
-    if not payload.get("is_admin", False):
-        raise HTTPException(status_code=403, detail="Yetkisiz!")
-    
-    key = data.get("key")
-    user_id = data.get("user_id")
-    expiry_days = data.get("expiry_days", 0)
-    is_admin = data.get("is_admin", False)
-    user_type = data.get("user_type", "normal")
-    expiry_date = None if is_admin else (datetime.now() + timedelta(days=expiry_days)).isoformat()
-    
-    try:
-        # Yeni kolonlarla ekle
-        db.execute(text("""
-            INSERT INTO users (`key`, user_id, expiry_date, created_at, is_admin, user_type, daily_used, last_reset_date)
-            VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin, :user_type, :daily_used, :last_reset_date)
-        """), {
-            "key": key,
-            "user_id": user_id,
-            "expiry_date": expiry_date,
-            "created_at": datetime.now().isoformat(),
-            "is_admin": is_admin,
-            "user_type": user_type,
-            "daily_used": 0,
-            "last_reset_date": datetime.now().isoformat()
-        })
-    except Exception as e:
-        # Eğer yeni kolonlar yoksa, eski yapıyla ekle
-        try:
-            db.execute(text("""
-                INSERT INTO users (`key`, user_id, expiry_date, created_at, is_admin)
-                VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin)
-            """), {
-                "key": key,
-                "user_id": user_id,
-                "expiry_date": expiry_date,
-                "created_at": datetime.now().isoformat(),
-                "is_admin": is_admin
-            })
-        except Exception as e2:
-            # Eğer created_at kolonu da yoksa, en eski yapıyla ekle
-            db.execute(text("""
-                INSERT INTO users (`key`, user_id, expiry_date, is_admin)
-                VALUES (:key, :user_id, :expiry_date, :is_admin)
-            """), {
-                "key": key,
-                "user_id": user_id,
-                "expiry_date": expiry_date,
-                "is_admin": is_admin
-            })
-    
-    db.commit()
-    
-    # Token'ı yenile
-    new_token = refresh_token(payload)
-    
-    return {
-        "status": "success", 
-        "message": "Kullanıcı eklendi",
-        "new_token": new_token
-    }
-
-@app.get("/admin/users")
-async def get_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    if not token:
-        raise HTTPException(status_code=401, detail="Token eksik!")
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except jwt.exceptions.DecodeError:
-        raise HTTPException(status_code=401, detail="Geçersiz token!")
-    if not payload.get("is_admin", False):
-        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
-    
-    result = db.execute(text("SELECT * FROM users ORDER BY created_at DESC")).fetchall()
-    users = []
-    for row in result:
-        # Kullanıcı türünü belirle
-        user_type = getattr(row, 'user_type', None)
-        if not user_type:
-            user_type = 'admin' if row.is_admin else 'normal'
-        
-        # Günlük limiti belirle
-        daily_limit = 0 if row.is_admin or user_type == 'premium' else 500
-        
-        # Günlük kullanımı al
-        daily_used = getattr(row, 'daily_used', 0) or 0
-        
-        users.append({
-            "id": row.key,  # key'i id olarak kullan
-            "key": row.key,
-            "user_id": row.user_id,
-            "expiry_date": row.expiry_date,
-            "is_admin": row.is_admin,
-            "user_type": user_type,
-            "daily_limit": daily_limit,
-            "daily_used": daily_used,
-            "created_at": getattr(row, 'created_at', row.expiry_date) if hasattr(row, 'created_at') else row.expiry_date
-        })
-    return users
-
-@app.delete("/admin/users/{user_id}")
-async def delete_user(user_id: str, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    if not token:
-        raise HTTPException(status_code=401, detail="Token eksik!")
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except jwt.exceptions.DecodeError:
-        raise HTTPException(status_code=401, detail="Geçersiz token!")
-    if not payload.get("is_admin", False):
-        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
-    
-    # Önce kullanıcının var olup olmadığını kontrol et
-    result = db.execute(text("SELECT * FROM users WHERE `key` = :user_id"), {"user_id": user_id}).fetchone()
-    if not result:
-        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı!")
-    
-    # Kullanıcıyı sil
-    db.execute(text("DELETE FROM users WHERE `key` = :user_id"), {"user_id": user_id})
-    db.commit()
-    
-    # Token'ı yenile
-    new_token = refresh_token(payload)
-    
-    return {
-        "status": "success", 
-        "message": "Kullanıcı silindi",
-        "new_token": new_token
-    }
-
-@app.get("/test-db")
-async def test_db(db: SessionLocal = Depends(get_db)):
-    try:
-        db.execute(text("SELECT 1"))
-        return {"status": "success"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.post("/admin/set-backend-url")
-async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    if not token:
-        raise HTTPException(status_code=401, detail="Token eksik!")
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except jwt.exceptions.DecodeError:
-        raise HTTPException(status_code=401, detail="Geçersiz token!")
-    if not payload.get("is_admin", False):
-        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
-    backend_url = data.get("backend_url")
-    if not backend_url:
-        raise HTTPException(status_code=400, detail="Backend URL eksik!")
-    db.execute(text("""
-        INSERT INTO settings (`key`, value)
-        VALUES ('backend_url', :value)
-        ON DUPLICATE KEY UPDATE value = :value
-    """), {"value": backend_url})
-    db.commit()
-    
-    # Token'ı yenile
-    new_token = refresh_token(payload)
-    
-    return {
-        "status": "success", 
-        "message": "Backend URL kaydedildi",
-        "new_token": new_token
-    }
-
-@app.get("/get-backend-url")
-async def get_backend_url():
-    return {"backend_url": BACKEND_URL}
-
-
-
-@app.get("/")
-async def keep_alive():
-    return {"status": "alive"}
-
-@app.on_event("startup")
-async def startup_event():
-    print("API Başlatıldı!") 
-
-@app.api_route("/live", methods=["GET", "HEAD"])
-async def live():
-    print("API uyandırıldı!")
-    return {"status": "alive"}
+    new_token = refresh_token(
