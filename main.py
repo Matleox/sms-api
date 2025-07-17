@@ -175,19 +175,17 @@ def reset_daily_usage_if_needed(db, user_key):
         db.commit()
         return 0
 
+
+
 @app.post("/login")
 async def login(data: dict, db: SessionLocal = Depends(get_db)):
     key = data.get("key")
     
-    try:
-        result = db.execute(text("SELECT * FROM users WHERE `key` = :key"), {"key": key}).fetchone()
-        if not result:
-            raise HTTPException(status_code=401, detail="Geçersiz key!")
-        if result.expiry_date and datetime.fromisoformat(result.expiry_date) < datetime.now():
-            raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
-    except Exception as e:
-        print(f"Database error: {e}")
+    result = db.execute(text("SELECT * FROM users WHERE `key` = :key"), {"key": key}).fetchone()
+    if not result:
         raise HTTPException(status_code=401, detail="Geçersiz key!")
+    if result.expiry_date and datetime.fromisoformat(result.expiry_date) < datetime.now():
+        raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
     
     # Kullanıcı türünü belirle
     user_type = getattr(result, 'user_type', None)
@@ -474,14 +472,17 @@ async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: S
 async def get_backend_url():
     return {"backend_url": BACKEND_URL}
 
+
+
 @app.get("/")
 async def keep_alive():
     return {"status": "alive"}
 
 @app.on_event("startup")
 async def startup_event():
-    print("SMS API Backend başlatıldı!")
+    print("API Başlatıldı!") 
 
 @app.api_route("/live", methods=["GET", "HEAD"])
 async def live():
+    print("API uyandırıldı!")
     return {"status": "alive"}
