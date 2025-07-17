@@ -148,42 +148,50 @@ def reset_daily_usage_if_needed(db, user_key):
     """Günlük kullanımı sıfırla (eğer yeni günse)"""
     today = datetime.now().strftime("%Y-%m-%d")
     
-    # Kullanıcının son sıfırlama tarihini kontrol et
-    result = db.execute(text("SELECT last_reset_date FROM users WHERE `key` = :key"), {"key": user_key}).fetchone()
-    if result and result.last_reset_date:
-        last_reset = datetime.fromisoformat(result.last_reset_date).strftime("%Y-%m-%d")
-        if last_reset != today:
-            # Yeni gün, kullanımı sıfırla
+    try:
+        # Kullanıcının son sıfırlama tarihini kontrol et
+        result = db.execute(text("SELECT last_reset_date FROM users WHERE `key` COLLATE utf8mb4_general_ci = :key COLLATE utf8mb4_general_ci"), {"key": user_key}).fetchone()
+        if result and result.last_reset_date:
+            last_reset = datetime.fromisoformat(result.last_reset_date).strftime("%Y-%m-%d")
+            if last_reset != today:
+                # Yeni gün, kullanımı sıfırla
+                db.execute(text("""
+                    UPDATE users 
+                    SET daily_used = 0, last_reset_date = :today 
+                    WHERE `key` COLLATE utf8mb4_general_ci = :key COLLATE utf8mb4_general_ci
+                """), {"today": datetime.now().isoformat(), "key": user_key})
+                db.commit()
+                return 0
+            else:
+                # Aynı gün, mevcut kullanımı döndür
+                result = db.execute(text("SELECT daily_used FROM users WHERE `key` COLLATE utf8mb4_general_ci = :key COLLATE utf8mb4_general_ci"), {"key": user_key}).fetchone()
+                return result.daily_used if result else 0
+        else:
+            # İlk kez kullanım, sıfırla
             db.execute(text("""
                 UPDATE users 
                 SET daily_used = 0, last_reset_date = :today 
-                WHERE `key` = :key
+                WHERE `key` COLLATE utf8mb4_general_ci = :key COLLATE utf8mb4_general_ci
             """), {"today": datetime.now().isoformat(), "key": user_key})
             db.commit()
             return 0
-        else:
-            # Aynı gün, mevcut kullanımı döndür
-            result = db.execute(text("SELECT daily_used FROM users WHERE `key` = :key"), {"key": user_key}).fetchone()
-            return result.daily_used if result else 0
-    else:
-        # İlk kez kullanım, sıfırla
-        db.execute(text("""
-            UPDATE users 
-            SET daily_used = 0, last_reset_date = :today 
-            WHERE `key` = :key
-        """), {"today": datetime.now().isoformat(), "key": user_key})
-        db.commit()
+    except Exception as e:
+        print(f"Database error in reset_daily_usage_if_needed: {e}")
         return 0
 
 @app.post("/login")
 async def login(data: dict, db: SessionLocal = Depends(get_db)):
     key = data.get("key")
     
-    result = db.execute(text("SELECT * FROM users WHERE `key` = :key"), {"key": key}).fetchone()
-    if not result:
+    try:
+        result = db.execute(text("SELECT * FROM users WHERE `key` COLLATE utf8mb4_general_ci = :key COLLATE utf8mb4_general_ci"), {"key": key}).fetchone()
+        if not result:
+            raise HTTPException(status_code=401, detail="Geçersiz key!")
+        if result.expiry_date and datetime.fromisoformat(result.expiry_date) < datetime.now():
+            raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
+    except Exception as e:
+        print(f"Database error: {e}")
         raise HTTPException(status_code=401, detail="Geçersiz key!")
-    if result.expiry_date and datetime.fromisoformat(result.expiry_date) < datetime.now():
-        raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
     
     # Kullanıcı türünü belirle
     user_type = getattr(result, 'user_type', None)
@@ -311,7 +319,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
         db.execute(text("""
             UPDATE users 
             SET daily_used = :daily_used 
-            WHERE `key` = :user_id
+            WHERE `key` COLLATE utf8mb4_general_ci = :user_id COLLATE utf8mb4_general_ci
         """), {"daily_used": current_used + sent_count, "user_id": user_id})
         db.commit()
 
