@@ -11,6 +11,11 @@ import requests
 from datetime import datetime, timedelta
 import importlib
 import enough
+import base64
+import pyotp
+import qrcode
+from io import BytesIO
+import secrets
 
 load_dotenv()
 
@@ -116,47 +121,163 @@ def refresh_token(payload):
         "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
 
+# 2FA yardımcı fonksiyonları
 
+def get_2fa_settings(db):
+    row = db.execute(text("SELECT value FROM settings WHERE `key` = '2fa' ")).fetchone()
+    if row and row.value:
+        import json
+        return json.loads(row.value)
+    return {"enabled": False, "secret": None}
+
+def set_2fa_settings(db, enabled, secret=None):
+    import json
+    value = json.dumps({"enabled": enabled, "secret": secret})
+    db.execute(text("REPLACE INTO settings (`key`, value) VALUES ('2fa', :value)"), {"value": value})
+    db.commit()
+
+@app.get("/admin/2fa-status")
+async def admin_2fa_status(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    settings = get_2fa_settings(db)
+    return {"status": "success", "enabled": settings.get("enabled", False)}
+
+@app.post("/admin/enable-2fa")
+async def admin_enable_2fa(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    secret = pyotp.random_base32()
+    set_2fa_settings(db, False, secret)
+    totp = pyotp.TOTP(secret)
+    uri = totp.provisioning_uri(name="Admin", issuer_name="SMS Panel")
+    img = qrcode.make(uri)
+    buffered = BytesIO()
+    img.save(buffered, format="PNG")
+    qr_b64 = base64.b64encode(buffered.getvalue()).decode()
+    qr_url = f"data:image/png;base64,{qr_b64}"
+    return {"status": "success", "qr_code": qr_url}
+
+@app.post("/admin/confirm-2fa")
+async def admin_confirm_2fa(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    code = data.get("code")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    settings = get_2fa_settings(db)
+    secret = settings.get("secret")
+    if not secret:
+        raise HTTPException(status_code=400, detail="2FA kurulumu başlatılmamış!")
+    totp = pyotp.TOTP(secret)
+    if not totp.verify(code):
+        raise HTTPException(status_code=400, detail="Kod geçersiz!")
+    set_2fa_settings(db, True, secret)
+    # Token yenile
+    new_token = refresh_token(payload)
+    return {"status": "success", "new_token": new_token}
+
+@app.post("/admin/disable-2fa")
+async def admin_disable_2fa(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    set_2fa_settings(db, False, None)
+    new_token = refresh_token(payload)
+    return {"status": "success", "new_token": new_token}
+
+# Girişte 2FA kontrolü ve temp_token üretimi
+TEMP_TOKENS = {}
 
 @app.post("/login")
 async def login(data: dict, db: SessionLocal = Depends(get_db)):
     key = data.get("key")
-    
     try:
         result = db.execute(text("SELECT * FROM users WHERE `key` = :key"), {"key": key}).fetchone()
     except Exception as e:
         print(f"Database error: {e}")
         raise HTTPException(status_code=401, detail="Geçersiz key!")
-    
     if not result:
         raise HTTPException(status_code=401, detail="Geçersiz key!")
     if result.expiry_date and datetime.fromisoformat(result.expiry_date) < datetime.now():
         raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
-    
-    # Kullanıcı türünü belirle
     user_type = getattr(result, 'user_type', None)
     if not user_type:
         user_type = 'admin' if result.is_admin else 'normal'
-    
-    # Günlük kullanımı kontrol et ve sıfırla (gerekirse)
     daily_used = reset_daily_usage_if_needed(db, key)
-    
-    # Günlük limiti belirle
     daily_limit = 0 if result.is_admin or user_type == 'premium' else 500
-    
+    # 2FA kontrolü
+    if result.is_admin:
+        settings = get_2fa_settings(db)
+        if settings.get("enabled") and settings.get("secret"):
+            # 2FA aktif, temp_token üret
+            temp_token = secrets.token_urlsafe(32)
+            TEMP_TOKENS[temp_token] = {
+                "user_id": result.user_id,
+                "is_admin": result.is_admin,
+                "user_type": user_type,
+                "exp": time.time() + 300, # 5 dakika geçerli
+                "daily_limit": daily_limit,
+                "daily_used": daily_used
+            }
+            return {"requires_2fa": True, "temp_token": temp_token}
     token = jwt.encode({
         "user_id": result.user_id,
         "is_admin": result.is_admin,
         "user_type": user_type,
         "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
-    
     return {
         "access_token": token, 
         "is_admin": result.is_admin,
         "user_type": user_type,
         "daily_limit": daily_limit,
         "daily_used": daily_used
+    }
+
+@app.post("/verify-2fa")
+async def verify_2fa(data: dict, db: SessionLocal = Depends(get_db)):
+    temp_token = data.get("temp_token")
+    code = data.get("code")
+    if not temp_token or not code:
+        raise HTTPException(status_code=400, detail="Eksik bilgi!")
+    info = TEMP_TOKENS.get(temp_token)
+    if not info or info["exp"] < time.time():
+        raise HTTPException(status_code=401, detail="Temp token süresi doldu!")
+    settings = get_2fa_settings(db)
+    secret = settings.get("secret")
+    if not secret:
+        raise HTTPException(status_code=400, detail="2FA aktif değil!")
+    totp = pyotp.TOTP(secret)
+    if not totp.verify(code):
+        raise HTTPException(status_code=400, detail="Kod geçersiz!")
+    # Başarılı, gerçek JWT üret
+    token = jwt.encode({
+        "user_id": info["user_id"],
+        "is_admin": info["is_admin"],
+        "user_type": info["user_type"],
+        "exp": datetime.utcnow() + timedelta(minutes=30)
+    }, SECRET_KEY, algorithm="HS256")
+    # Günlük limit ve used da ekle
+    return {
+        "access_token": token,
+        "is_admin": info["is_admin"],
+        "user_type": info["user_type"],
+        "daily_limit": info["daily_limit"],
+        "daily_used": info["daily_used"]
     }
 
 @app.get("/get-api-url")
