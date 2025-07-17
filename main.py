@@ -107,6 +107,15 @@ def reset_daily_usage_if_needed(db, user_key):
         db.commit()
         return 0
 
+def refresh_token(payload):
+    """Token'ı yenile (30 dakika daha)"""
+    return jwt.encode({
+        "user_id": payload.get("user_id"),
+        "is_admin": payload.get("is_admin"),
+        "user_type": payload.get("user_type"),
+        "exp": datetime.utcnow() + timedelta(minutes=30)
+    }, SECRET_KEY, algorithm="HS256")
+
 
 
 @app.post("/login")
@@ -138,7 +147,8 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
     token = jwt.encode({
         "user_id": result.user_id,
         "is_admin": result.is_admin,
-        "user_type": user_type
+        "user_type": user_type,
+        "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
     
     return {
@@ -254,7 +264,15 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
         """), {"daily_used": current_used + sent_count, "user_id": user_id})
         db.commit()
 
-    return {"status": "success", "success": sent_count, "failed": failed_count}
+    # Token'ı yenile
+    new_token = refresh_token(payload)
+
+    return {
+        "status": "success", 
+        "success": sent_count, 
+        "failed": failed_count,
+        "new_token": new_token
+    }
 
 @app.post("/admin/add-key")
 async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
@@ -315,7 +333,15 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLo
             })
     
     db.commit()
-    return {"status": "success", "message": "Kullanıcı eklendi"}
+    
+    # Token'ı yenile
+    new_token = refresh_token(payload)
+    
+    return {
+        "status": "success", 
+        "message": "Kullanıcı eklendi",
+        "new_token": new_token
+    }
 
 @app.get("/admin/users")
 async def get_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
@@ -374,7 +400,15 @@ async def delete_user(user_id: str, token: str = Depends(oauth2_scheme), db: Ses
     # Kullanıcıyı sil
     db.execute(text("DELETE FROM users WHERE `key` = :user_id"), {"user_id": user_id})
     db.commit()
-    return {"status": "success", "message": "Kullanıcı silindi"}
+    
+    # Token'ı yenile
+    new_token = refresh_token(payload)
+    
+    return {
+        "status": "success", 
+        "message": "Kullanıcı silindi",
+        "new_token": new_token
+    }
 
 @app.get("/test-db")
 async def test_db(db: SessionLocal = Depends(get_db)):
@@ -403,7 +437,15 @@ async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: S
         ON DUPLICATE KEY UPDATE value = :value
     """), {"value": backend_url})
     db.commit()
-    return {"status": "success", "message": "Backend URL kaydedildi"}
+    
+    # Token'ı yenile
+    new_token = refresh_token(payload)
+    
+    return {
+        "status": "success", 
+        "message": "Backend URL kaydedildi",
+        "new_token": new_token
+    }
 
 @app.get("/get-backend-url")
 async def get_backend_url():
