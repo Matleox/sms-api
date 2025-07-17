@@ -16,8 +16,6 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")
-RECAPTCHA_SECRET_KEY = os.getenv("RECAPTCHA_SECRET_KEY")
-RECAPTCHA_SITE_KEY = os.getenv("RECAPTCHA_SITE_KEY")
 SMS_API_URL = os.getenv("SMS_API_URL")
 BACKEND_URL = os.getenv("BACKEND_URL", "https://sms-api-qb7q.onrender.com")
 
@@ -177,33 +175,9 @@ def reset_daily_usage_if_needed(db, user_key):
         db.commit()
         return 0
 
-def verify_recaptcha(recaptcha_response: str) -> bool:
-    """reCAPTCHA doğrulama fonksiyonu"""
-    if not RECAPTCHA_SECRET_KEY:
-        return True  # Eğer secret key yoksa doğrulama yapma
-    
-    try:
-        response = requests.post(
-            'https://www.google.com/recaptcha/api/siteverify',
-            data={
-                'secret': RECAPTCHA_SECRET_KEY,
-                'response': recaptcha_response
-            }
-        )
-        result = response.json()
-        return result.get('success', False)
-    except Exception as e:
-        print(f"reCAPTCHA doğrulama hatası: {e}")
-        return False
-
 @app.post("/login")
 async def login(data: dict, db: SessionLocal = Depends(get_db)):
     key = data.get("key")
-    recaptcha_response = data.get("recaptcha_response")
-    
-    # reCAPTCHA doğrulama (eğer secret key varsa)
-    if RECAPTCHA_SECRET_KEY and not verify_recaptcha(recaptcha_response or ""):
-        raise HTTPException(status_code=400, detail="reCAPTCHA doğrulaması başarısız!")
     
     result = db.execute(text("SELECT * FROM users WHERE `key` = :key"), {"key": key}).fetchone()
     if not result:
@@ -496,75 +470,14 @@ async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: S
 async def get_backend_url():
     return {"backend_url": BACKEND_URL}
 
-@app.get("/get-recaptcha-site-key")
-async def get_recaptcha_site_key():
-    return {"site_key": RECAPTCHA_SITE_KEY or ""}
-
-@app.post("/admin/set-recaptcha-keys")
-async def set_recaptcha_keys(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    if not token:
-        raise HTTPException(status_code=401, detail="Token eksik!")
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except jwt.exceptions.DecodeError:
-        raise HTTPException(status_code=401, detail="Geçersiz token!")
-    if not payload.get("is_admin", False):
-        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
-    
-    site_key = data.get("site_key")
-    secret_key = data.get("secret_key")
-    
-    if not site_key or not secret_key:
-        raise HTTPException(status_code=400, detail="Site key ve Secret key gerekli!")
-    
-    # .env dosyasını güncelle
-    try:
-        env_path = ".env"
-        if os.path.exists(env_path):
-            with open(env_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-            
-            # Mevcut reCAPTCHA satırlarını güncelle veya ekle
-            site_key_updated = False
-            secret_key_updated = False
-            
-            for i, line in enumerate(lines):
-                if line.startswith("RECAPTCHA_SITE_KEY="):
-                    lines[i] = f"RECAPTCHA_SITE_KEY={site_key}\n"
-                    site_key_updated = True
-                elif line.startswith("RECAPTCHA_SECRET_KEY="):
-                    lines[i] = f"RECAPTCHA_SECRET_KEY={secret_key}\n"
-                    secret_key_updated = True
-            
-            # Eğer satırlar yoksa ekle
-            if not site_key_updated:
-                lines.append(f"RECAPTCHA_SITE_KEY={site_key}\n")
-            if not secret_key_updated:
-                lines.append(f"RECAPTCHA_SECRET_KEY={secret_key}\n")
-            
-            with open(env_path, 'w', encoding='utf-8') as f:
-                f.writelines(lines)
-            
-            # Global değişkenleri güncelle
-            global RECAPTCHA_SITE_KEY, RECAPTCHA_SECRET_KEY
-            RECAPTCHA_SITE_KEY = site_key
-            RECAPTCHA_SECRET_KEY = secret_key
-            
-            return {"status": "success", "message": "reCAPTCHA anahtarları güncellendi"}
-        else:
-            raise HTTPException(status_code=500, detail="`.env` dosyası bulunamadı!")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Güncelleme hatası: {str(e)}")
-
 @app.get("/")
 async def keep_alive():
     return {"status": "alive"}
 
 @app.on_event("startup")
 async def startup_event():
-    print("API Başlatıldı!") 
+    print("SMS API Backend başlatıldı!")
 
 @app.api_route("/live", methods=["GET", "HEAD"])
 async def live():
-    print("API uyandırıldı!")
     return {"status": "alive"}
