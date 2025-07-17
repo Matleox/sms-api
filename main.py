@@ -58,35 +58,6 @@ def init_db():
                 is_admin BOOLEAN
             );
         """))
-        
-        # created_at kolonunu ekle (eğer yoksa)
-        try:
-            conn.execute(text("ALTER TABLE users ADD COLUMN created_at TEXT"))
-            print("created_at kolonu eklendi")
-        except Exception as e:
-            print(f"created_at kolonu zaten var veya eklenemedi: {e}")
-        
-        # user_type kolonunu ekle (eğer yoksa)
-        try:
-            conn.execute(text("ALTER TABLE users ADD COLUMN user_type VARCHAR(20) DEFAULT 'normal'"))
-            print("user_type kolonu eklendi")
-        except Exception as e:
-            print(f"user_type kolonu zaten var veya eklenemedi: {e}")
-        
-        # daily_used kolonunu ekle (eğer yoksa)
-        try:
-            conn.execute(text("ALTER TABLE users ADD COLUMN daily_used INTEGER DEFAULT 0"))
-            print("daily_used kolonu eklendi")
-        except Exception as e:
-            print(f"daily_used kolonu zaten var veya eklenemedi: {e}")
-        
-        # last_reset_date kolonunu ekle (eğer yoksa)
-        try:
-            conn.execute(text("ALTER TABLE users ADD COLUMN last_reset_date TEXT"))
-            print("last_reset_date kolonu eklendi")
-        except Exception as e:
-            print(f"last_reset_date kolonu zaten var veya eklenemedi: {e}")
-        
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS sms_limits (
                 user_id TEXT,
@@ -94,45 +65,6 @@ def init_db():
                 `count` INTEGER
             );
         """))
-        
-        # Admin kullanıcısını ekle (eğer yoksa)
-        try:
-            conn.execute(text("""
-                INSERT IGNORE INTO users (`key`, user_id, expiry_date, created_at, is_admin, user_type)
-                VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin, :user_type);
-            """), {
-                "key": "admin123",
-                "user_id": "admin",
-                "expiry_date": "2099-12-31T23:59:59",
-                "created_at": datetime.now().isoformat(),
-                "is_admin": True,
-                "user_type": "admin"
-            })
-        except Exception as e:
-            # Eğer yeni kolonlar yoksa, eski yapıyla ekle
-            try:
-                conn.execute(text("""
-                    INSERT IGNORE INTO users (`key`, user_id, expiry_date, created_at, is_admin)
-                    VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin);
-                """), {
-                    "key": "admin123",
-                    "user_id": "admin",
-                    "expiry_date": "2099-12-31T23:59:59",
-                    "created_at": datetime.now().isoformat(),
-                    "is_admin": True
-                })
-            except Exception as e2:
-                # Eğer created_at kolonu da yoksa, en eski yapıyla ekle
-                conn.execute(text("""
-                    INSERT IGNORE INTO users (`key`, user_id, expiry_date, is_admin)
-                    VALUES (:key, :user_id, :expiry_date, :is_admin);
-                """), {
-                    "key": "admin123",
-                    "user_id": "admin",
-                    "expiry_date": "2099-12-31T23:59:59",
-                    "is_admin": True
-                })
-        
         conn.execute(text("""
             INSERT IGNORE INTO settings (`key`, value)
             VALUES (:key, :value)
