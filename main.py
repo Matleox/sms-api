@@ -141,7 +141,7 @@ def set_2fa_settings(db, enabled, secret=None):
     db.commit()
 
 @app.get("/admin/2fa-status")
-async def admin_2fa_status(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def admin_2fa_status(token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     except jwt.exceptions.DecodeError:
@@ -152,7 +152,7 @@ async def admin_2fa_status(token: str = Depends(oauth2_scheme), db: SessionLocal
     return {"status": "success", "enabled": settings.get("enabled", False)}
 
 @app.post("/admin/enable-2fa")
-async def admin_enable_2fa(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def admin_enable_2fa(token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     except jwt.exceptions.DecodeError:
@@ -171,8 +171,7 @@ async def admin_enable_2fa(token: str = Depends(oauth2_scheme), db: SessionLocal
     return {"status": "success", "qr_code": qr_url}
 
 @app.post("/admin/confirm-2fa")
-async def admin_confirm_2fa(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    code = data.get("code")
+async def admin_confirm_2fa(data: dict, token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     except jwt.exceptions.DecodeError:
@@ -192,7 +191,7 @@ async def admin_confirm_2fa(data: dict, token: str = Depends(oauth2_scheme), db:
     return {"status": "success", "new_token": new_token}
 
 @app.post("/admin/disable-2fa")
-async def admin_disable_2fa(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def admin_disable_2fa(token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     except jwt.exceptions.DecodeError:
