@@ -310,7 +310,7 @@ async def get_api_url():
     return {"api_url": SMS_API_URL or ""}
 
 @app.post("/admin/set-api-url")
-async def set_api_url(data: dict, token: str = Depends(oauth2_scheme)):
+async def set_api_url(data: dict, token: str = Depends(get_token_from_cookie)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
@@ -357,7 +357,7 @@ async def set_api_url(data: dict, token: str = Depends(oauth2_scheme)):
         raise HTTPException(status_code=500, detail=f"Güncelleme hatası: {str(e)}")
 
 @app.post("/send-sms")
-async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def send_sms(data: dict, token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
@@ -421,7 +421,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
     }
 
 @app.post("/admin/add-key")
-async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def add_key(data: dict, token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
@@ -490,7 +490,7 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLo
     }
 
 @app.get("/admin/users")
-async def get_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def get_users(token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
@@ -528,7 +528,7 @@ async def get_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depe
     return users
 
 @app.delete("/admin/users/{user_id}")
-async def delete_user(user_id: str, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def delete_user(user_id: str, token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
@@ -565,7 +565,7 @@ async def test_db(db: SessionLocal = Depends(get_db)):
         return {"status": "error", "message": str(e)}
 
 @app.post("/admin/set-backend-url")
-async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def set_backend_url(data: dict, token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
