@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Response, Cookie
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
@@ -19,11 +19,6 @@ import secrets
 
 load_dotenv()
 
-def get_token_from_cookie(access_token: str = Cookie(None)):
-    if not access_token:
-        raise HTTPException(status_code=401, detail="Token eksik!")
-    return access_token
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")
 SMS_API_URL = os.getenv("SMS_API_URL")
@@ -37,11 +32,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://boyleiyi.xyz",
-        "http://localhost:5173"
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -146,7 +137,7 @@ def set_2fa_settings(db, enabled, secret=None):
     db.commit()
 
 @app.get("/admin/2fa-status")
-async def admin_2fa_status(token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
+async def admin_2fa_status(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     except jwt.exceptions.DecodeError:
@@ -157,7 +148,7 @@ async def admin_2fa_status(token: str = Depends(get_token_from_cookie), db: Sess
     return {"status": "success", "enabled": settings.get("enabled", False)}
 
 @app.post("/admin/enable-2fa")
-async def admin_enable_2fa(token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
+async def admin_enable_2fa(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     except jwt.exceptions.DecodeError:
@@ -176,7 +167,8 @@ async def admin_enable_2fa(token: str = Depends(get_token_from_cookie), db: Sess
     return {"status": "success", "qr_code": qr_url}
 
 @app.post("/admin/confirm-2fa")
-async def admin_confirm_2fa(data: dict, token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
+async def admin_confirm_2fa(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    code = data.get("code")
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     except jwt.exceptions.DecodeError:
@@ -196,7 +188,7 @@ async def admin_confirm_2fa(data: dict, token: str = Depends(get_token_from_cook
     return {"status": "success", "new_token": new_token}
 
 @app.post("/admin/disable-2fa")
-async def admin_disable_2fa(token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
+async def admin_disable_2fa(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     except jwt.exceptions.DecodeError:
@@ -210,13 +202,8 @@ async def admin_disable_2fa(token: str = Depends(get_token_from_cookie), db: Ses
 # Girişte 2FA kontrolü ve temp_token üretimi
 TEMP_TOKENS = {}
 
-def get_token_from_cookie(access_token: str = Cookie(None)):
-    if not access_token:
-        raise HTTPException(status_code=401, detail="Token eksik!")
-    return access_token
-
 @app.post("/login")
-async def login(data: dict, response: Response, db: SessionLocal = Depends(get_db)):
+async def login(data: dict, db: SessionLocal = Depends(get_db)):
     key = data.get("key")
     try:
         result = db.execute(text("SELECT * FROM users WHERE `key` = :key"), {"key": key}).fetchone()
@@ -236,12 +223,13 @@ async def login(data: dict, response: Response, db: SessionLocal = Depends(get_d
     if result.is_admin:
         settings = get_2fa_settings(db)
         if settings.get("enabled") and settings.get("secret"):
+            # 2FA aktif, temp_token üret
             temp_token = secrets.token_urlsafe(32)
             TEMP_TOKENS[temp_token] = {
                 "user_id": result.user_id,
                 "is_admin": result.is_admin,
                 "user_type": user_type,
-                "exp": time.time() + 300,
+                "exp": time.time() + 300, # 5 dakika geçerli
                 "daily_limit": daily_limit,
                 "daily_used": daily_used
             }
@@ -252,15 +240,8 @@ async def login(data: dict, response: Response, db: SessionLocal = Depends(get_d
         "user_type": user_type,
         "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
-    # Cookie olarak set et
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        httponly=True,
-        secure=False,  # local test için False, prod'da True yap
-        samesite="Lax"
-    )
     return {
+        "access_token": token, 
         "is_admin": result.is_admin,
         "user_type": user_type,
         "daily_limit": daily_limit,
@@ -268,7 +249,7 @@ async def login(data: dict, response: Response, db: SessionLocal = Depends(get_d
     }
 
 @app.post("/verify-2fa")
-async def verify_2fa(data: dict, response: Response, db: SessionLocal = Depends(get_db)):
+async def verify_2fa(data: dict, db: SessionLocal = Depends(get_db)):
     temp_token = data.get("temp_token")
     code = data.get("code")
     if not temp_token or not code:
@@ -283,38 +264,28 @@ async def verify_2fa(data: dict, response: Response, db: SessionLocal = Depends(
     totp = pyotp.TOTP(secret)
     if not totp.verify(code):
         raise HTTPException(status_code=400, detail="Kod geçersiz!")
+    # Başarılı, gerçek JWT üret
     token = jwt.encode({
         "user_id": info["user_id"],
         "is_admin": info["is_admin"],
         "user_type": info["user_type"],
         "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
-    # Cookie olarak set et
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        httponly=True,
-        secure=False,  # local test için False, prod'da True yap
-        samesite="Lax"
-    )
+    # Günlük limit ve used da ekle
     return {
+        "access_token": token,
         "is_admin": info["is_admin"],
         "user_type": info["user_type"],
         "daily_limit": info["daily_limit"],
         "daily_used": info["daily_used"]
     }
 
-@app.post("/logout")
-async def logout(response: Response):
-    response.delete_cookie("access_token")
-    return {"status": "success"}
-
 @app.get("/get-api-url")
 async def get_api_url():
     return {"api_url": SMS_API_URL or ""}
 
 @app.post("/admin/set-api-url")
-async def set_api_url(data: dict, token: str = Depends(get_token_from_cookie)):
+async def set_api_url(data: dict, token: str = Depends(oauth2_scheme)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
@@ -361,7 +332,7 @@ async def set_api_url(data: dict, token: str = Depends(get_token_from_cookie)):
         raise HTTPException(status_code=500, detail=f"Güncelleme hatası: {str(e)}")
 
 @app.post("/send-sms")
-async def send_sms(data: dict, token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
+async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
@@ -425,7 +396,7 @@ async def send_sms(data: dict, token: str = Depends(get_token_from_cookie), db: 
     }
 
 @app.post("/admin/add-key")
-async def add_key(data: dict, token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
+async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
@@ -494,7 +465,7 @@ async def add_key(data: dict, token: str = Depends(get_token_from_cookie), db: S
     }
 
 @app.get("/admin/users")
-async def get_users(token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
+async def get_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
@@ -532,7 +503,7 @@ async def get_users(token: str = Depends(get_token_from_cookie), db: SessionLoca
     return users
 
 @app.delete("/admin/users/{user_id}")
-async def delete_user(user_id: str, token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
+async def delete_user(user_id: str, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
@@ -569,7 +540,7 @@ async def test_db(db: SessionLocal = Depends(get_db)):
         return {"status": "error", "message": str(e)}
 
 @app.post("/admin/set-backend-url")
-async def set_backend_url(data: dict, token: str = Depends(get_token_from_cookie), db: SessionLocal = Depends(get_db)):
+async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
