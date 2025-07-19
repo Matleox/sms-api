@@ -19,6 +19,11 @@ import secrets
 
 load_dotenv()
 
+def get_token_from_cookie(access_token: str = Cookie(None)):
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    return access_token
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")
 SMS_API_URL = os.getenv("SMS_API_URL")
