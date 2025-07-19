@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Response, Cookie
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
@@ -202,8 +202,13 @@ async def admin_disable_2fa(token: str = Depends(oauth2_scheme), db: SessionLoca
 # Girişte 2FA kontrolü ve temp_token üretimi
 TEMP_TOKENS = {}
 
+def get_token_from_cookie(access_token: str = Cookie(None)):
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    return access_token
+
 @app.post("/login")
-async def login(data: dict, db: SessionLocal = Depends(get_db)):
+async def login(data: dict, response: Response, db: SessionLocal = Depends(get_db)):
     key = data.get("key")
     try:
         result = db.execute(text("SELECT * FROM users WHERE `key` = :key"), {"key": key}).fetchone()
@@ -223,13 +228,12 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
     if result.is_admin:
         settings = get_2fa_settings(db)
         if settings.get("enabled") and settings.get("secret"):
-            # 2FA aktif, temp_token üret
             temp_token = secrets.token_urlsafe(32)
             TEMP_TOKENS[temp_token] = {
                 "user_id": result.user_id,
                 "is_admin": result.is_admin,
                 "user_type": user_type,
-                "exp": time.time() + 300, # 5 dakika geçerli
+                "exp": time.time() + 300,
                 "daily_limit": daily_limit,
                 "daily_used": daily_used
             }
@@ -240,8 +244,15 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
         "user_type": user_type,
         "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
+    # Cookie olarak set et
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        secure=False,  # local test için False, prod'da True yap
+        samesite="Lax"
+    )
     return {
-        "access_token": token, 
         "is_admin": result.is_admin,
         "user_type": user_type,
         "daily_limit": daily_limit,
@@ -249,7 +260,7 @@ async def login(data: dict, db: SessionLocal = Depends(get_db)):
     }
 
 @app.post("/verify-2fa")
-async def verify_2fa(data: dict, db: SessionLocal = Depends(get_db)):
+async def verify_2fa(data: dict, response: Response, db: SessionLocal = Depends(get_db)):
     temp_token = data.get("temp_token")
     code = data.get("code")
     if not temp_token or not code:
@@ -264,21 +275,31 @@ async def verify_2fa(data: dict, db: SessionLocal = Depends(get_db)):
     totp = pyotp.TOTP(secret)
     if not totp.verify(code):
         raise HTTPException(status_code=400, detail="Kod geçersiz!")
-    # Başarılı, gerçek JWT üret
     token = jwt.encode({
         "user_id": info["user_id"],
         "is_admin": info["is_admin"],
         "user_type": info["user_type"],
         "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
-    # Günlük limit ve used da ekle
+    # Cookie olarak set et
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        secure=False,  # local test için False, prod'da True yap
+        samesite="Lax"
+    )
     return {
-        "access_token": token,
         "is_admin": info["is_admin"],
         "user_type": info["user_type"],
         "daily_limit": info["daily_limit"],
         "daily_used": info["daily_used"]
     }
+
+@app.post("/logout")
+async def logout(response: Response):
+    response.delete_cookie("access_token")
+    return {"status": "success"}
 
 @app.get("/get-api-url")
 async def get_api_url():
