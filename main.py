@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
@@ -23,6 +23,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")
 SMS_API_URL = os.getenv("SMS_API_URL")
 BACKEND_URL = os.getenv("BACKEND_URL", "https://sms-api-qb7q.onrender.com")
+TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "0x4AAAAAABm3wzZDqgyzZKnB")
 
 if not DATABASE_URL:
     raise Exception("DATABASE_URL environment variable not set!")
@@ -203,7 +204,28 @@ async def admin_disable_2fa(token: str = Depends(oauth2_scheme), db: SessionLoca
 TEMP_TOKENS = {}
 
 @app.post("/login")
-async def login(data: dict, db: SessionLocal = Depends(get_db)):
+async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)):
+    # Turnstile token kontrolü
+    turnstile_token = data.get("turnstile_token")
+    if not turnstile_token:
+        raise HTTPException(status_code=400, detail="Güvenlik doğrulaması eksik!")
+    # Cloudflare Turnstile doğrulaması
+    verify_url = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+    remoteip = request.client.host if request.client else None
+    payload = {
+        "secret": TURNSTILE_SECRET_KEY,
+        "response": turnstile_token,
+    }
+    if remoteip:
+        payload["remoteip"] = remoteip
+    try:
+        r = requests.post(verify_url, data=payload, timeout=5)
+        result = r.json()
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail="Güvenlik doğrulaması başarısız! Lütfen tekrar deneyin.")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Güvenlik doğrulaması sırasında hata oluştu!")
+
     key = data.get("key")
     try:
         result = db.execute(text("SELECT * FROM users WHERE `key` = :key"), {"key": key}).fetchone()
