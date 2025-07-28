@@ -23,7 +23,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")
 SMS_API_URL = os.getenv("SMS_API_URL")
 BACKEND_URL = os.getenv("BACKEND_URL", "https://sms-api-qb7q.onrender.com")
-TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "0x4AAAAAABm3wzZDqgyzZKnB")
+TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "0x4AAAAAABm3w5qo-VCyb97HtS-uaxypPmE")
 
 if not DATABASE_URL:
     raise Exception("DATABASE_URL environment variable not set!")
