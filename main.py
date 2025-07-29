@@ -489,8 +489,8 @@ async def get_users(token: str = Depends(oauth2_scheme), db: SessionLocal = Depe
         # Günlük limiti belirle
         daily_limit = 0 if row.is_admin or user_type == 'premium' else 500
         
-        # Günlük kullanımı al
-        daily_used = getattr(row, 'daily_used', 0) or 0
+        # Günlük kullanımı sms_limits tablosundan al
+        daily_used = get_today_sms_count(db, row.user_id)
         
         users.append({
             "id": row.key,  # key'i id olarak kullan
