@@ -82,36 +82,20 @@ def init_db():
 
 init_db()
 
-def reset_daily_usage_if_needed(db, user_key):
-    """Günlük kullanımı sıfırla (eğer yeni günse)"""
+# --- YENİ GÜNLÜK KULLANIM FONKSİYONLARI ---
+def get_today_sms_count(db, user_id):
     today = datetime.now().strftime("%Y-%m-%d")
-    
-    # Kullanıcının son sıfırlama tarihini kontrol et
-    result = db.execute(text("SELECT last_reset_date FROM users WHERE `key` = :key"), {"key": user_key}).fetchone()
-    if result and result.last_reset_date:
-        last_reset = datetime.fromisoformat(result.last_reset_date).strftime("%Y-%m-%d")
-        if last_reset != today:
-            # Yeni gün, kullanımı sıfırla
-            db.execute(text("""
-                UPDATE users 
-                SET daily_used = 0, last_reset_date = :today 
-                WHERE `key` = :key
-            """), {"today": datetime.now().isoformat(), "key": user_key})
-            db.commit()
-            return 0
-        else:
-            # Aynı gün, mevcut kullanımı döndür
-            result = db.execute(text("SELECT daily_used FROM users WHERE `key` = :key"), {"key": user_key}).fetchone()
-            return result.daily_used if result else 0
+    result = db.execute(text("SELECT count FROM sms_limits WHERE user_id = :user_id AND date = :today"), {"user_id": user_id, "today": today}).fetchone()
+    return result.count if result else 0
+
+def increment_today_sms_count(db, user_id, count):
+    today = datetime.now().strftime("%Y-%m-%d")
+    result = db.execute(text("SELECT count FROM sms_limits WHERE user_id = :user_id AND date = :today"), {"user_id": user_id, "today": today}).fetchone()
+    if result:
+        db.execute(text("UPDATE sms_limits SET count = count + :count WHERE user_id = :user_id AND date = :today"), {"count": count, "user_id": user_id, "today": today})
     else:
-        # İlk kez kullanım, sıfırla
-        db.execute(text("""
-            UPDATE users 
-            SET daily_used = 0, last_reset_date = :today 
-            WHERE `key` = :key
-        """), {"today": datetime.now().isoformat(), "key": user_key})
-        db.commit()
-        return 0
+        db.execute(text("INSERT INTO sms_limits (user_id, date, count) VALUES (:user_id, :today, :count)"), {"user_id": user_id, "today": today, "count": count})
+    db.commit()
 
 def refresh_token(payload):
     """Token'ı yenile (30 dakika daha)"""
@@ -239,7 +223,8 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
     user_type = getattr(result, 'user_type', None)
     if not user_type:
         user_type = 'admin' if result.is_admin else 'normal'
-    daily_used = reset_daily_usage_if_needed(db, key)
+    # --- GÜNLÜK SMS HAKKI ---
+    daily_used = get_today_sms_count(db, result.user_id)
     daily_limit = 0 if result.is_admin or user_type == 'premium' else 500
     # 2FA kontrolü
     if result.is_admin:
@@ -374,8 +359,8 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
 
     # Günlük limit kontrolü (sadece normal kullanıcılar için)
     if not is_admin and user_type == "normal":
-        daily_used = reset_daily_usage_if_needed(db, user_id)
-        if daily_used >= 500:
+        daily_used = get_today_sms_count(db, user_id)
+        if daily_used + count > 500:
             raise HTTPException(status_code=403, detail="Günlük 500 SMS sınırı!")
 
     email = "mehmetyilmaz24121@gmail.com"
@@ -399,13 +384,7 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
 
     # Günlük kullanımı güncelle (sadece normal kullanıcılar için)
     if not is_admin and user_type == "normal":
-        current_used = reset_daily_usage_if_needed(db, user_id)
-        db.execute(text("""
-            UPDATE users 
-            SET daily_used = :daily_used 
-            WHERE `key` = :user_id
-        """), {"daily_used": current_used + sent_count, "user_id": user_id})
-        db.commit()
+        increment_today_sms_count(db, user_id, sent_count)
 
     # Token'ı yenile
     new_token = refresh_token(payload)
@@ -414,7 +393,9 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
         "status": "success", 
         "success": sent_count, 
         "failed": failed_count,
-        "new_token": new_token
+        "new_token": new_token,
+        # GÜNCEL KULLANIMI DA DÖNDÜR
+        "daily_used": get_today_sms_count(db, user_id)
     }
 
 @app.post("/admin/add-key")
