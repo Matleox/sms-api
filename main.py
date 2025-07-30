@@ -84,12 +84,18 @@ init_db()
 
 # --- YENİ GÜNLÜK KULLANIM FONKSİYONLARI ---
 def get_today_sms_count(db, user_id):
-    today = datetime.now().strftime("%Y-%m-%d")
+    # Türkiye saat dilimini kullan (UTC+3)
+    from datetime import timezone, timedelta
+    turkey_tz = timezone(timedelta(hours=3))
+    today = datetime.now(turkey_tz).strftime("%Y-%m-%d")
     result = db.execute(text("SELECT count FROM sms_limits WHERE user_id = :user_id AND date = :today"), {"user_id": user_id, "today": today}).fetchone()
     return result.count if result else 0
 
 def increment_today_sms_count(db, user_id, count):
-    today = datetime.now().strftime("%Y-%m-%d")
+    # Türkiye saat dilimini kullan (UTC+3)
+    from datetime import timezone, timedelta
+    turkey_tz = timezone(timedelta(hours=3))
+    today = datetime.now(turkey_tz).strftime("%Y-%m-%d")
     result = db.execute(text("SELECT count FROM sms_limits WHERE user_id = :user_id AND date = :today"), {"user_id": user_id, "today": today}).fetchone()
     if result:
         db.execute(text("UPDATE sms_limits SET count = count + :count WHERE user_id = :user_id AND date = :today"), {"count": count, "user_id": user_id, "today": today})
@@ -591,13 +597,24 @@ async def get_user_stats(token: str = Depends(oauth2_scheme), db: SessionLocal =
     is_admin = payload.get("is_admin", False)
     user_type = payload.get("user_type", "normal")
     
+    # Debug için Türkiye saati
+    from datetime import timezone, timedelta
+    turkey_tz = timezone(timedelta(hours=3))
+    today_turkey = datetime.now(turkey_tz).strftime("%Y-%m-%d")
+    
     # Günlük kullanım verilerini al
     daily_used = get_today_sms_count(db, user_id)
     daily_limit = 0 if is_admin or user_type == 'premium' else 500
     
     return {
         "daily_used": daily_used,
-        "daily_limit": daily_limit
+        "daily_limit": daily_limit,
+        "debug": {
+            "user_id": user_id,
+            "user_type": user_type,
+            "today_turkey": today_turkey,
+            "is_admin": is_admin
+        }
     }
 
 
@@ -605,6 +622,33 @@ async def get_user_stats(token: str = Depends(oauth2_scheme), db: SessionLocal =
 @app.get("/")
 async def keep_alive():
     return {"status": "alive"}
+
+@app.post("/admin/reset-user-limit")
+async def reset_user_limit(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    
+    user_id = data.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User ID eksik!")
+    
+    # Kullanıcının bugünkü limitini sıfırla
+    from datetime import timezone, timedelta
+    turkey_tz = timezone(timedelta(hours=3))
+    today = datetime.now(turkey_tz).strftime("%Y-%m-%d")
+    
+    # Eğer bugünkü kayıt varsa sil, yoksa yeni kayıt oluştur
+    db.execute(text("DELETE FROM sms_limits WHERE user_id = :user_id AND date = :today"), {"user_id": user_id, "today": today})
+    db.execute(text("INSERT INTO sms_limits (user_id, date, count) VALUES (:user_id, :today, 0)"), {"user_id": user_id, "today": today})
+    db.commit()
+    
+    return {"status": "success", "message": f"Kullanıcı {user_id} limiti sıfırlandı"}
 
 @app.on_event("startup")
 async def startup_event():
