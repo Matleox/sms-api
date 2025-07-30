@@ -238,7 +238,8 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
                 "user_type": user_type,
                 "exp": time.time() + 300, # 5 dakika geçerli
                 "daily_limit": daily_limit,
-                "daily_used": daily_used
+                "daily_used": daily_used,
+                "expiry_date": result.expiry_date
             }
             return {"requires_2fa": True, "temp_token": temp_token}
     token = jwt.encode({
@@ -252,7 +253,8 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
         "is_admin": result.is_admin,
         "user_type": user_type,
         "daily_limit": daily_limit,
-        "daily_used": daily_used
+        "daily_used": daily_used,
+        "expiry_date": result.expiry_date
     }
 
 @app.post("/verify-2fa")
@@ -284,7 +286,8 @@ async def verify_2fa(data: dict, db: SessionLocal = Depends(get_db)):
         "is_admin": info["is_admin"],
         "user_type": info["user_type"],
         "daily_limit": info["daily_limit"],
-        "daily_used": info["daily_used"]
+        "daily_used": info["daily_used"],
+        "expiry_date": info.get("expiry_date")
     }
 
 @app.get("/get-api-url")
