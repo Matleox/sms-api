@@ -97,6 +97,28 @@ def increment_today_sms_count(db, user_id, count):
         db.execute(text("INSERT INTO sms_limits (user_id, date, count) VALUES (:user_id, :today, :count)"), {"user_id": user_id, "today": today, "count": count})
     db.commit()
 
+# --- AKTİF KULLANICI TAKİP SİSTEMİ ---
+ACTIVE_USERS = set()
+
+def get_user_identifier(request: Request):
+    """Kullanıcıyı benzersiz şekilde tanımla (IP + User Agent)"""
+    client_ip = request.client.host
+    user_agent = request.headers.get("user-agent", "")
+    return f"{client_ip}:{user_agent}"
+
+def add_active_user(request: Request):
+    """Aktif kullanıcı ekle"""
+    user_id = get_user_identifier(request)
+    ACTIVE_USERS.add(user_id)
+    return len(ACTIVE_USERS)
+
+def remove_active_user(request: Request):
+    """Aktif kullanıcı çıkar"""
+    user_id = get_user_identifier(request)
+    if user_id in ACTIVE_USERS:
+        ACTIVE_USERS.remove(user_id)
+    return len(ACTIVE_USERS)
+
 def refresh_token(payload):
     """Token'ı yenile (30 dakika daha)"""
     return jwt.encode({
@@ -581,8 +603,27 @@ async def get_backend_url():
 
 
 @app.get("/")
-async def keep_alive():
-    return {"status": "alive"}
+async def keep_alive(request: Request):
+    """Ana sayfa - Aktif kullanıcı ekle"""
+    active_count = add_active_user(request)
+    return {"status": "alive", "active_users": active_count}
+
+@app.post("/active-user/join")
+async def join_active_user(request: Request):
+    """Aktif kullanıcı ekle (sayfa açılışında)"""
+    active_count = add_active_user(request)
+    return {"active_users": active_count}
+
+@app.post("/active-user/leave")
+async def leave_active_user(request: Request):
+    """Aktif kullanıcı çıkar (sayfa kapanışında)"""
+    active_count = remove_active_user(request)
+    return {"active_users": active_count}
+
+@app.get("/admin/active-users")
+async def get_active_users_count(token: str = Depends(oauth2_scheme)):
+    """Admin için aktif kullanıcı sayısını getir"""
+    return {"active_users": len(ACTIVE_USERS)}
 
 @app.on_event("startup")
 async def startup_event():
