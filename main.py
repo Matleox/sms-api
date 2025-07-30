@@ -578,6 +578,28 @@ async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: S
 async def get_backend_url():
     return {"backend_url": BACKEND_URL}
 
+@app.get("/user-stats")
+async def get_user_stats(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    
+    user_id = payload.get("user_id")
+    is_admin = payload.get("is_admin", False)
+    user_type = payload.get("user_type", "normal")
+    
+    # Günlük kullanım verilerini al
+    daily_used = get_today_sms_count(db, user_id)
+    daily_limit = 0 if is_admin or user_type == 'premium' else 500
+    
+    return {
+        "daily_used": daily_used,
+        "daily_limit": daily_limit
+    }
+
 
 
 @app.get("/")
