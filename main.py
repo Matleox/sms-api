@@ -391,8 +391,8 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
         print(f"SMS Hatası: {e}")
         sent_count, failed_count = 0, count
 
-    # Günlük kullanımı güncelle (normal ve premium kullanıcılar için)
-    if not is_admin and (user_type == "normal" or user_type == "premium"):
+    # Günlük kullanımı güncelle (sadece normal kullanıcılar için)
+    if not is_admin and user_type == "normal":
         increment_today_sms_count(db, user_id, sent_count)
 
     # Token'ı yenile
