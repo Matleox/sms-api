@@ -61,7 +61,8 @@ def init_db():
                 `key` VARCHAR(255) PRIMARY KEY,
                 user_id TEXT,
                 expiry_date TEXT,
-                is_admin BOOLEAN
+                is_admin BOOLEAN,
+                user_type ENUM('normal', 'premium', 'admin') DEFAULT 'normal'
             );
         """))
         conn.execute(text("""
@@ -258,15 +259,9 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
         raise HTTPException(status_code=401, detail="Geçersiz key!")
     if result.expiry_date and datetime.fromisoformat(result.expiry_date) < datetime.now():
         raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
-    
-    # Kullanıcı türünü doğru belirle
     user_type = getattr(result, 'user_type', None)
     if not user_type:
-        if result.is_admin:
-            user_type = 'admin'
-        else:
-            user_type = 'normal'
-    
+        user_type = 'admin' if result.is_admin else 'normal'
     # --- GÜNLÜK SMS HAKKI ---
     daily_used = get_today_sms_count(db, result.user_id)
     daily_limit = 0 if result.is_admin or user_type == 'premium' else 500
@@ -547,42 +542,26 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLo
     try:
         # Yeni kolonlarla ekle
         db.execute(text("""
-            INSERT INTO users (`key`, user_id, expiry_date, created_at, is_admin, user_type, daily_used, last_reset_date)
-            VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin, :user_type, :daily_used, :last_reset_date)
+            INSERT INTO users (`key`, user_id, expiry_date, is_admin, user_type)
+            VALUES (:key, :user_id, :expiry_date, :is_admin, :user_type)
         """), {
             "key": key,
             "user_id": user_id,
             "expiry_date": expiry_date,
-            "created_at": datetime.now().isoformat(),
             "is_admin": is_admin,
-            "user_type": user_type,
-            "daily_used": 0,
-            "last_reset_date": datetime.now().isoformat()
+            "user_type": user_type
         })
     except Exception as e:
-        # Eğer yeni kolonlar yoksa, eski yapıyla ekle
-        try:
-            db.execute(text("""
-                INSERT INTO users (`key`, user_id, expiry_date, created_at, is_admin)
-                VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin)
-            """), {
-                "key": key,
-                "user_id": user_id,
-                "expiry_date": expiry_date,
-                "created_at": datetime.now().isoformat(),
-                "is_admin": is_admin
-            })
-        except Exception as e2:
-            # Eğer created_at kolonu da yoksa, en eski yapıyla ekle
-            db.execute(text("""
-                INSERT INTO users (`key`, user_id, expiry_date, is_admin)
-                VALUES (:key, :user_id, :expiry_date, :is_admin)
-            """), {
-                "key": key,
-                "user_id": user_id,
-                "expiry_date": expiry_date,
-                "is_admin": is_admin
-            })
+        # Eğer user_type kolonu yoksa, eski yapıyla ekle
+        db.execute(text("""
+            INSERT INTO users (`key`, user_id, expiry_date, is_admin)
+            VALUES (:key, :user_id, :expiry_date, :is_admin)
+        """), {
+            "key": key,
+            "user_id": user_id,
+            "expiry_date": expiry_date,
+            "is_admin": is_admin
+        })
     
     db.commit()
     
