@@ -61,8 +61,7 @@ def init_db():
                 `key` VARCHAR(255) PRIMARY KEY,
                 user_id TEXT,
                 expiry_date TEXT,
-                is_admin BOOLEAN,
-                user_type ENUM('normal', 'premium', 'admin') DEFAULT 'normal'
+                is_admin BOOLEAN
             );
         """))
         conn.execute(text("""
@@ -287,16 +286,10 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
         "user_type": user_type,
         "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
-    
     # Token'ı yenile
-    payload = {
-        "user_id": result.user_id,
-        "is_admin": result.is_admin,
-        "user_type": user_type
-    }
     new_token = refresh_token(payload)
 
-    # Kullanıcı log kaydı ekle
+    # User log kaydı ekle
     try:
         db.execute(text("""
             INSERT INTO user_logs (user_key, user_id, user_type, action, ip_address)
@@ -313,6 +306,7 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
         print(f"User log kaydı hatası: {e}")
 
     return {
+        "status": "success",
         "access_token": new_token,
         "is_admin": result.is_admin,
         "user_type": user_type,
@@ -542,26 +536,42 @@ async def add_key(data: dict, token: str = Depends(oauth2_scheme), db: SessionLo
     try:
         # Yeni kolonlarla ekle
         db.execute(text("""
-            INSERT INTO users (`key`, user_id, expiry_date, is_admin, user_type)
-            VALUES (:key, :user_id, :expiry_date, :is_admin, :user_type)
+            INSERT INTO users (`key`, user_id, expiry_date, created_at, is_admin, user_type, daily_used, last_reset_date)
+            VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin, :user_type, :daily_used, :last_reset_date)
         """), {
             "key": key,
             "user_id": user_id,
             "expiry_date": expiry_date,
+            "created_at": datetime.now().isoformat(),
             "is_admin": is_admin,
-            "user_type": user_type
+            "user_type": user_type,
+            "daily_used": 0,
+            "last_reset_date": datetime.now().isoformat()
         })
     except Exception as e:
-        # Eğer user_type kolonu yoksa, eski yapıyla ekle
-        db.execute(text("""
-            INSERT INTO users (`key`, user_id, expiry_date, is_admin)
-            VALUES (:key, :user_id, :expiry_date, :is_admin)
-        """), {
-            "key": key,
-            "user_id": user_id,
-            "expiry_date": expiry_date,
-            "is_admin": is_admin
-        })
+        # Eğer yeni kolonlar yoksa, eski yapıyla ekle
+        try:
+            db.execute(text("""
+                INSERT INTO users (`key`, user_id, expiry_date, created_at, is_admin)
+                VALUES (:key, :user_id, :expiry_date, :created_at, :is_admin)
+            """), {
+                "key": key,
+                "user_id": user_id,
+                "expiry_date": expiry_date,
+                "created_at": datetime.now().isoformat(),
+                "is_admin": is_admin
+            })
+        except Exception as e2:
+            # Eğer created_at kolonu da yoksa, en eski yapıyla ekle
+            db.execute(text("""
+                INSERT INTO users (`key`, user_id, expiry_date, is_admin)
+                VALUES (:key, :user_id, :expiry_date, :is_admin)
+            """), {
+                "key": key,
+                "user_id": user_id,
+                "expiry_date": expiry_date,
+                "is_admin": is_admin
+            })
     
     db.commit()
     
@@ -882,11 +892,7 @@ async def get_user_logs(
     token: str = Depends(oauth2_scheme), 
     db: SessionLocal = Depends(get_db),
     page: int = 1,
-    limit: int = 10,
-    user_key: str = None,
-    action: str = None,
-    start_date: str = None,
-    end_date: str = None
+    limit: int = 10
 ):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
@@ -897,42 +903,19 @@ async def get_user_logs(
     if not payload.get("is_admin", False):
         raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
     
-    # Base query
-    query = "SELECT * FROM user_logs WHERE 1=1"
-    params = {}
-    
-    # Filtreler
-    if user_key:
-        query += " AND user_key = :user_key"
-        params["user_key"] = user_key
-    
-    if action:
-        query += " AND action = :action"
-        params["action"] = action
-    
-    if start_date:
-        query += " AND DATE(timestamp) >= :start_date"
-        params["start_date"] = start_date
-    
-    if end_date:
-        query += " AND DATE(timestamp) <= :end_date"
-        params["end_date"] = end_date
-    
     # Toplam kayıt sayısı
-    count_query = f"SELECT COUNT(*) as total FROM ({query}) as subquery"
-    total_result = db.execute(text(count_query), params).fetchone()
+    total_result = db.execute(text("SELECT COUNT(*) as total FROM user_logs")).fetchone()
     total_count = total_result.total if total_result else 0
     
     # Sayfalama
     offset = (page - 1) * limit
-    query += " ORDER BY timestamp DESC LIMIT :limit OFFSET :offset"
-    params["limit"] = limit
-    params["offset"] = offset
+    result = db.execute(text("""
+        SELECT * FROM user_logs 
+        ORDER BY timestamp DESC 
+        LIMIT :limit OFFSET :offset
+    """), {"limit": limit, "offset": offset}).fetchall()
     
-    # Logları çek
-    result = db.execute(text(query), params).fetchall()
     logs = []
-    
     for row in result:
         logs.append({
             "id": row.id,
@@ -975,7 +958,7 @@ async def add_user_log(data: dict, db: SessionLocal = Depends(get_db)):
     })
     db.commit()
     
-    return {"status": "success", "message": "Kullanıcı log kaydı eklendi"}
+    return {"status": "success", "message": "User log kaydı eklendi"}
 
 @app.delete("/admin/user-logs/clear")
 async def clear_user_logs(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
@@ -988,11 +971,11 @@ async def clear_user_logs(token: str = Depends(oauth2_scheme), db: SessionLocal 
     if not payload.get("is_admin", False):
         raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
     
-    # Tüm kullanıcı loglarını sil
+    # Tüm user loglarını sil
     db.execute(text("DELETE FROM user_logs"))
     db.commit()
     
-    return {"status": "success", "message": "Tüm kullanıcı logları temizlendi"}
+    return {"status": "success", "message": "Tüm user logları temizlendi"}
 
 @app.on_event("startup")
 async def startup_event():
