@@ -258,9 +258,15 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
         raise HTTPException(status_code=401, detail="Geçersiz key!")
     if result.expiry_date and datetime.fromisoformat(result.expiry_date) < datetime.now():
         raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
+    
+    # Kullanıcı türünü doğru belirle
     user_type = getattr(result, 'user_type', None)
     if not user_type:
-        user_type = 'admin' if result.is_admin else 'normal'
+        if result.is_admin:
+            user_type = 'admin'
+        else:
+            user_type = 'normal'
+    
     # --- GÜNLÜK SMS HAKKI ---
     daily_used = get_today_sms_count(db, result.user_id)
     daily_limit = 0 if result.is_admin or user_type == 'premium' else 500
