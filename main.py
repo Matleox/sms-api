@@ -399,10 +399,15 @@ async def send_sms(data: dict, request: Request, token: str = Depends(oauth2_sch
     # IP adresini al
     ip_address = request.client.host if request.client else "unknown"
 
+    # Türkiye saatini kullan (UTC+3)
+    from datetime import timezone, timedelta
+    turkey_tz = timezone(timedelta(hours=3))
+    turkey_time = datetime.now(turkey_tz)
+
     # SMS log kaydı oluştur (başlangıçta)
     db.execute(text("""
-        INSERT INTO sms_logs (user_key, user_id, phone_number, sms_count, success_count, failed_count, mode, status, ip_address)
-        VALUES (:user_key, :user_id, :phone_number, :sms_count, :success_count, :failed_count, :mode, :status, :ip_address)
+        INSERT INTO sms_logs (user_key, user_id, phone_number, sms_count, success_count, failed_count, mode, status, ip_address, timestamp)
+        VALUES (:user_key, :user_id, :phone_number, :sms_count, :success_count, :failed_count, :mode, :status, :ip_address, :timestamp)
     """), {
         "user_key": user_key,
         "user_id": user_id,
@@ -412,7 +417,8 @@ async def send_sms(data: dict, request: Request, token: str = Depends(oauth2_sch
         "failed_count": 0,
         "mode": "turbo" if mode == 2 else "normal",
         "status": "sending",
-        "ip_address": ip_address
+        "ip_address": ip_address,
+        "timestamp": turkey_time
     })
     db.commit()
 
