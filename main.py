@@ -425,18 +425,19 @@ async def send_sms(data: dict, request: Request, token: str = Depends(oauth2_sch
         db.execute(text("""
             UPDATE sms_logs 
             SET success_count = :success_count, failed_count = :failed_count, status = :status
-            WHERE user_key = :user_key AND phone_number = :phone_number AND timestamp = (
-                SELECT MAX(timestamp) FROM sms_logs 
-                WHERE user_key = :user_key2 AND phone_number = :phone_number2
+            WHERE id = (
+                SELECT id FROM (
+                    SELECT id FROM sms_logs 
+                    WHERE user_key = :user_key AND phone_number = :phone_number
+                    ORDER BY timestamp DESC LIMIT 1
+                ) as temp
             )
         """), {
             "success_count": sent_count,
             "failed_count": failed_count,
             "status": "completed",
             "user_key": user_key,
-            "phone_number": phone,
-            "user_key2": user_key,
-            "phone_number2": phone
+            "phone_number": phone
         })
         db.commit()
         
@@ -448,18 +449,19 @@ async def send_sms(data: dict, request: Request, token: str = Depends(oauth2_sch
         db.execute(text("""
             UPDATE sms_logs 
             SET success_count = :success_count, failed_count = :failed_count, status = :status
-            WHERE user_key = :user_key AND phone_number = :phone_number AND timestamp = (
-                SELECT MAX(timestamp) FROM sms_logs 
-                WHERE user_key = :user_key2 AND phone_number = :phone_number2
+            WHERE id = (
+                SELECT id FROM (
+                    SELECT id FROM sms_logs 
+                    WHERE user_key = :user_key AND phone_number = :phone_number
+                    ORDER BY timestamp DESC LIMIT 1
+                ) as temp
             )
         """), {
             "success_count": sent_count,
             "failed_count": failed_count,
             "status": "failed",
             "user_key": user_key,
-            "phone_number": phone,
-            "user_key2": user_key,
-            "phone_number2": phone
+            "phone_number": phone
         })
         db.commit()
 
