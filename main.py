@@ -286,7 +286,13 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
         "user_type": user_type,
         "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
+    
     # Token'ı yenile
+    payload = {
+        "user_id": result.user_id,
+        "is_admin": result.is_admin,
+        "user_type": user_type
+    }
     new_token = refresh_token(payload)
 
     # Kullanıcı log kaydı ekle
