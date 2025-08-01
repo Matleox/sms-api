@@ -836,6 +836,23 @@ async def add_sms_log(data: dict, db: SessionLocal = Depends(get_db)):
     
     return {"status": "success", "message": "SMS log kaydı eklendi"}
 
+@app.delete("/admin/sms-logs/clear")
+async def clear_sms_logs(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    
+    # Tüm SMS loglarını sil
+    db.execute(text("DELETE FROM sms_logs"))
+    db.commit()
+    
+    return {"status": "success", "message": "Tüm SMS logları temizlendi"}
+
 @app.on_event("startup")
 async def startup_event():
     print("API Başlatıldı!") 
