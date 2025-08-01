@@ -280,14 +280,14 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
                 "expiry_date": result.expiry_date
             }
             return {"requires_2fa": True, "temp_token": temp_token}
-    token = jwt.encode({
+    # Token'ı yenile
+    payload = {
         "user_id": result.user_id,
         "is_admin": result.is_admin,
         "user_type": user_type,
         "exp": datetime.utcnow() + timedelta(minutes=30)
-    }, SECRET_KEY, algorithm="HS256")
-    # Token'ı yenile
-    new_token = refresh_token(payload)
+    }
+    new_token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
     # User log kaydı ekle
     try:
