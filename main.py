@@ -90,20 +90,6 @@ def init_db():
             );
         """))
         conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS user_logs (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_key VARCHAR(255) NOT NULL,
-                user_id VARCHAR(255) NOT NULL,
-                user_type ENUM('normal', 'premium', 'admin') NOT NULL,
-                action ENUM('login', 'logout') NOT NULL,
-                ip_address VARCHAR(45),
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_user_key (user_key),
-                INDEX idx_timestamp (timestamp),
-                INDEX idx_action (action)
-            );
-        """))
-        conn.execute(text("""
             INSERT IGNORE INTO settings (`key`, value)
             VALUES (:key, :value)
         """), {
@@ -258,6 +244,7 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
         raise HTTPException(status_code=401, detail="Geçersiz key!")
     if result.expiry_date and datetime.fromisoformat(result.expiry_date) < datetime.now():
         raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
+    # Kullanıcı türünü belirle
     user_type = getattr(result, 'user_type', None)
     if not user_type:
         user_type = 'admin' if result.is_admin else 'normal'
@@ -280,34 +267,31 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
                 "expiry_date": result.expiry_date
             }
             return {"requires_2fa": True, "temp_token": temp_token}
-    # Token'ı yenile
-    payload = {
+    token = jwt.encode({
         "user_id": result.user_id,
         "is_admin": result.is_admin,
         "user_type": user_type,
         "exp": datetime.utcnow() + timedelta(minutes=30)
-    }
-    new_token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
-
+    }, SECRET_KEY, algorithm="HS256")
+    
     # User log kaydı ekle
     try:
         db.execute(text("""
             INSERT INTO user_logs (user_key, user_id, user_type, action, ip_address)
             VALUES (:user_key, :user_id, :user_type, :action, :ip_address)
         """), {
-            "user_key": key,
+            "user_key": result.key,
             "user_id": result.user_id,
             "user_type": user_type,
             "action": "login",
-            "ip_address": request.client.host if request.client else "unknown"
+            "ip_address": request.client.host if request.client else None
         })
         db.commit()
     except Exception as e:
         print(f"User log kaydı hatası: {e}")
-
+    
     return {
-        "status": "success",
-        "access_token": new_token,
+        "access_token": token, 
         "is_admin": result.is_admin,
         "user_type": user_type,
         "daily_limit": daily_limit,
@@ -894,23 +878,14 @@ async def get_user_logs(
     page: int = 1,
     limit: int = 10
 ):
-    print(f"User logs endpoint çağrıldı - Token: {token[:20]}...")
-    
     if not token:
-        print("Token eksik!")
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        print(f"Token decode başarılı - Payload: {payload}")
-    except jwt.exceptions.DecodeError as e:
-        print(f"Token decode hatası: {e}")
+    except jwt.exceptions.DecodeError:
         raise HTTPException(status_code=401, detail="Geçersiz token!")
-    
     if not payload.get("is_admin", False):
-        print(f"Admin değil - is_admin: {payload.get('is_admin')}")
         raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
-    
-    print("Admin kontrolü başarılı, logları çekiyor...")
     
     # Toplam kayıt sayısı
     total_result = db.execute(text("SELECT COUNT(*) as total FROM user_logs")).fetchone()
@@ -918,6 +893,8 @@ async def get_user_logs(
     
     # Sayfalama
     offset = (page - 1) * limit
+    
+    # Logları çek
     result = db.execute(text("""
         SELECT * FROM user_logs 
         ORDER BY timestamp DESC 
@@ -935,8 +912,6 @@ async def get_user_logs(
             "ip_address": row.ip_address,
             "timestamp": row.timestamp.isoformat() if row.timestamp else None
         })
-    
-    print(f"Toplam {len(logs)} log döndürülüyor")
     
     return {
         "logs": logs,
