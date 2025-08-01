@@ -731,12 +731,9 @@ async def get_sms_logs(
     page: int = 1,
     limit: int = 10,
     user_key: str = None,
-    user_id: str = None,
-    user_type: str = None,
     status: str = None,
     start_date: str = None,
-    end_date: str = None,
-    sort_order: str = 'desc'
+    end_date: str = None
 ):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
@@ -747,41 +744,25 @@ async def get_sms_logs(
     if not payload.get("is_admin", False):
         raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
     
-    # Base query with JOIN
-    query = """
-        SELECT sl.*, u.user_type, u.is_admin 
-        FROM sms_logs sl 
-        LEFT JOIN users u ON sl.user_key = u.key 
-        WHERE 1=1
-    """
+    # Base query
+    query = "SELECT * FROM sms_logs WHERE 1=1"
     params = {}
     
     # Filtreler
     if user_key:
-        query += " AND sl.user_key = :user_key"
+        query += " AND user_key = :user_key"
         params["user_key"] = user_key
     
-    if user_id:
-        query += " AND sl.user_id LIKE :user_id"
-        params["user_id"] = f"%{user_id}%"
-    
-    if user_type and user_type != 'all':
-        if user_type == 'admin':
-            query += " AND u.is_admin = 1"
-        else:
-            query += " AND u.user_type = :user_type AND u.is_admin = 0"
-            params["user_type"] = user_type
-    
     if status:
-        query += " AND sl.status = :status"
+        query += " AND status = :status"
         params["status"] = status
     
     if start_date:
-        query += " AND DATE(sl.timestamp) >= :start_date"
+        query += " AND DATE(timestamp) >= :start_date"
         params["start_date"] = start_date
     
     if end_date:
-        query += " AND DATE(sl.timestamp) <= :end_date"
+        query += " AND DATE(timestamp) <= :end_date"
         params["end_date"] = end_date
     
     # Toplam kayıt sayısı
@@ -789,9 +770,9 @@ async def get_sms_logs(
     total_result = db.execute(text(count_query), params).fetchone()
     total_count = total_result.total if total_result else 0
     
-    # Sayfalama ve sıralama
+    # Sayfalama
     offset = (page - 1) * limit
-    query += f" ORDER BY sl.timestamp {sort_order.upper()} LIMIT :limit OFFSET :offset"
+    query += " ORDER BY timestamp DESC LIMIT :limit OFFSET :offset"
     params["limit"] = limit
     params["offset"] = offset
     
@@ -800,9 +781,6 @@ async def get_sms_logs(
     logs = []
     
     for row in result:
-        # Kullanıcı türünü belirle
-        user_type = 'admin' if row.is_admin else (row.user_type or 'normal')
-        
         logs.append({
             "id": row.id,
             "user_key": row.user_key,
@@ -814,8 +792,7 @@ async def get_sms_logs(
             "mode": row.mode,
             "status": row.status,
             "ip_address": row.ip_address,
-            "timestamp": row.timestamp.isoformat() if row.timestamp else None,
-            "user_type": user_type
+            "timestamp": row.timestamp.isoformat() if row.timestamp else None
         })
     
     return {
