@@ -72,6 +72,24 @@ def init_db():
             );
         """))
         conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS sms_logs (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_key VARCHAR(255) NOT NULL,
+                user_id VARCHAR(255) NOT NULL,
+                phone_number VARCHAR(20) NOT NULL,
+                sms_count INT NOT NULL,
+                success_count INT DEFAULT 0,
+                failed_count INT DEFAULT 0,
+                mode ENUM('normal', 'turbo') NOT NULL,
+                status ENUM('pending', 'sending', 'completed', 'failed') NOT NULL,
+                ip_address VARCHAR(45),
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_user_key (user_key),
+                INDEX idx_timestamp (timestamp),
+                INDEX idx_status (status)
+            );
+        """))
+        conn.execute(text("""
             INSERT IGNORE INTO settings (`key`, value)
             VALUES (:key, :value)
         """), {
@@ -348,7 +366,7 @@ async def set_api_url(data: dict, token: str = Depends(oauth2_scheme)):
         raise HTTPException(status_code=500, detail=f"Güncelleme hatası: {str(e)}")
 
 @app.post("/send-sms")
-async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def send_sms(data: dict, request: Request, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
@@ -374,22 +392,76 @@ async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionL
 
     email = "mehmetyilmaz24121@gmail.com"
 
-    try:
-        enough_module = importlib.import_module("enough")
-        if not hasattr(enough_module, "is_enough"):
-            raise AttributeError("enough modülünde is_enough fonksiyonu bulunamadı!")
-    except ImportError as e:
-        raise HTTPException(status_code=500, detail=f"enough modülü yüklenemedi: {str(e)}")
-    except AttributeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Kullanıcı bilgilerini al
+    user_result = db.execute(text("SELECT `key` FROM users WHERE user_id = :user_id"), {"user_id": user_id}).fetchone()
+    user_key = user_result.key if user_result else user_id
+
+    # IP adresini al
+    ip_address = request.client.host if request.client else "unknown"
+
+    # SMS log kaydı oluştur (başlangıçta)
+    db.execute(text("""
+        INSERT INTO sms_logs (user_key, user_id, phone_number, sms_count, success_count, failed_count, mode, status, ip_address)
+        VALUES (:user_key, :user_id, :phone_number, :sms_count, :success_count, :failed_count, :mode, :status, :ip_address)
+    """), {
+        "user_key": user_key,
+        "user_id": user_id,
+        "phone_number": phone,
+        "sms_count": count,
+        "success_count": 0,
+        "failed_count": 0,
+        "mode": "turbo" if mode == 2 else "normal",
+        "status": "sending",
+        "ip_address": ip_address
+    })
+    db.commit()
 
     try:
         print(f"SMS gönderiliyor - Phone: {phone}, Email: {email}, Count: {count}")
         sent_count, failed_count = enough.is_enough(phone=phone, email=email, count=count, mode="turbo" if mode == 2 else "normal")
         print(f"SMS sonucu - Başarılı: {sent_count}, Başarısız: {failed_count}, Toplam: {sent_count + failed_count}")
+        
+        # Log kaydını güncelle
+        db.execute(text("""
+            UPDATE sms_logs 
+            SET success_count = :success_count, failed_count = :failed_count, status = :status
+            WHERE user_key = :user_key AND phone_number = :phone_number AND timestamp = (
+                SELECT MAX(timestamp) FROM sms_logs 
+                WHERE user_key = :user_key2 AND phone_number = :phone_number2
+            )
+        """), {
+            "success_count": sent_count,
+            "failed_count": failed_count,
+            "status": "completed",
+            "user_key": user_key,
+            "phone_number": phone,
+            "user_key2": user_key,
+            "phone_number2": phone
+        })
+        db.commit()
+        
     except Exception as e:
         print(f"SMS Hatası: {e}")
         sent_count, failed_count = 0, count
+        
+        # Hata durumunda log kaydını güncelle
+        db.execute(text("""
+            UPDATE sms_logs 
+            SET success_count = :success_count, failed_count = :failed_count, status = :status
+            WHERE user_key = :user_key AND phone_number = :phone_number AND timestamp = (
+                SELECT MAX(timestamp) FROM sms_logs 
+                WHERE user_key = :user_key2 AND phone_number = :phone_number2
+            )
+        """), {
+            "success_count": sent_count,
+            "failed_count": failed_count,
+            "status": "failed",
+            "user_key": user_key,
+            "phone_number": phone,
+            "user_key2": user_key,
+            "phone_number2": phone
+        })
+        db.commit()
 
     # Günlük kullanımı güncelle (sadece normal kullanıcılar için)
     if not is_admin and user_type == "normal":
@@ -638,17 +710,129 @@ async def reset_user_limit(data: dict, token: str = Depends(oauth2_scheme), db: 
     if not user_id:
         raise HTTPException(status_code=400, detail="User ID eksik!")
     
-    # Kullanıcının bugünkü limitini sıfırla
+    # Türkiye saat dilimini kullan (UTC+3)
     from datetime import timezone, timedelta
     turkey_tz = timezone(timedelta(hours=3))
     today = datetime.now(turkey_tz).strftime("%Y-%m-%d")
     
-    # Eğer bugünkü kayıt varsa sil, yoksa yeni kayıt oluştur
-    db.execute(text("DELETE FROM sms_limits WHERE user_id = :user_id AND date = :today"), {"user_id": user_id, "today": today})
-    db.execute(text("INSERT INTO sms_limits (user_id, date, count) VALUES (:user_id, :today, 0)"), {"user_id": user_id, "today": today})
+    # Kullanıcının günlük limitini sıfırla
+    db.execute(text("DELETE FROM sms_limits WHERE user_id = :user_id AND date = :today"), 
+               {"user_id": user_id, "today": today})
     db.commit()
     
-    return {"status": "success", "message": f"Kullanıcı {user_id} limiti sıfırlandı"}
+    return {"status": "success", "message": "Kullanıcı limiti sıfırlandı"}
+
+@app.get("/admin/sms-logs")
+async def get_sms_logs(
+    token: str = Depends(oauth2_scheme), 
+    db: SessionLocal = Depends(get_db),
+    page: int = 1,
+    limit: int = 10,
+    user_key: str = None,
+    status: str = None,
+    start_date: str = None,
+    end_date: str = None
+):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token eksik!")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.exceptions.DecodeError:
+        raise HTTPException(status_code=401, detail="Geçersiz token!")
+    if not payload.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    
+    # Base query
+    query = "SELECT * FROM sms_logs WHERE 1=1"
+    params = {}
+    
+    # Filtreler
+    if user_key:
+        query += " AND user_key = :user_key"
+        params["user_key"] = user_key
+    
+    if status:
+        query += " AND status = :status"
+        params["status"] = status
+    
+    if start_date:
+        query += " AND DATE(timestamp) >= :start_date"
+        params["start_date"] = start_date
+    
+    if end_date:
+        query += " AND DATE(timestamp) <= :end_date"
+        params["end_date"] = end_date
+    
+    # Toplam kayıt sayısı
+    count_query = f"SELECT COUNT(*) as total FROM ({query}) as subquery"
+    total_result = db.execute(text(count_query), params).fetchone()
+    total_count = total_result.total if total_result else 0
+    
+    # Sayfalama
+    offset = (page - 1) * limit
+    query += " ORDER BY timestamp DESC LIMIT :limit OFFSET :offset"
+    params["limit"] = limit
+    params["offset"] = offset
+    
+    # Logları çek
+    result = db.execute(text(query), params).fetchall()
+    logs = []
+    
+    for row in result:
+        logs.append({
+            "id": row.id,
+            "user_key": row.user_key,
+            "user_id": row.user_id,
+            "phone_number": row.phone_number,
+            "sms_count": row.sms_count,
+            "success_count": row.success_count,
+            "failed_count": row.failed_count,
+            "mode": row.mode,
+            "status": row.status,
+            "ip_address": row.ip_address,
+            "timestamp": row.timestamp.isoformat() if row.timestamp else None
+        })
+    
+    return {
+        "logs": logs,
+        "total": total_count,
+        "page": page,
+        "limit": limit,
+        "total_pages": (total_count + limit - 1) // limit
+    }
+
+@app.post("/admin/sms-logs/add")
+async def add_sms_log(data: dict, db: SessionLocal = Depends(get_db)):
+    user_key = data.get("user_key")
+    user_id = data.get("user_id")
+    phone_number = data.get("phone_number")
+    sms_count = data.get("sms_count")
+    success_count = data.get("success_count", 0)
+    failed_count = data.get("failed_count", 0)
+    mode = data.get("mode")
+    status = data.get("status")
+    ip_address = data.get("ip_address")
+    
+    if not all([user_key, user_id, phone_number, sms_count, mode, status]):
+        raise HTTPException(status_code=400, detail="Eksik parametreler!")
+    
+    db.execute(text("""
+        INSERT INTO sms_logs (user_key, user_id, phone_number, sms_count, success_count, failed_count, mode, status, ip_address)
+        VALUES (:user_key, :user_id, :phone_number, :sms_count, :success_count, :failed_count, :mode, :status, :ip_address)
+    """), {
+        "user_key": user_key,
+        "user_id": user_id,
+        "phone_number": phone_number,
+        "sms_count": sms_count,
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "mode": mode,
+        "status": status,
+        "ip_address": ip_address
+    })
+    db.commit()
+    
+    return {"status": "success", "message": "SMS log kaydı eklendi"}
 
 @app.on_event("startup")
 async def startup_event():
