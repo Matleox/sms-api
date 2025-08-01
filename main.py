@@ -894,14 +894,23 @@ async def get_user_logs(
     page: int = 1,
     limit: int = 10
 ):
+    print(f"User logs endpoint çağrıldı - Token: {token[:20]}...")
+    
     if not token:
+        print("Token eksik!")
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except jwt.exceptions.DecodeError:
+        print(f"Token decode başarılı - Payload: {payload}")
+    except jwt.exceptions.DecodeError as e:
+        print(f"Token decode hatası: {e}")
         raise HTTPException(status_code=401, detail="Geçersiz token!")
+    
     if not payload.get("is_admin", False):
+        print(f"Admin değil - is_admin: {payload.get('is_admin')}")
         raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
+    
+    print("Admin kontrolü başarılı, logları çekiyor...")
     
     # Toplam kayıt sayısı
     total_result = db.execute(text("SELECT COUNT(*) as total FROM user_logs")).fetchone()
@@ -926,6 +935,8 @@ async def get_user_logs(
             "ip_address": row.ip_address,
             "timestamp": row.timestamp.isoformat() if row.timestamp else None
         })
+    
+    print(f"Toplam {len(logs)} log döndürülüyor")
     
     return {
         "logs": logs,
