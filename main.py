@@ -244,7 +244,6 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
         raise HTTPException(status_code=401, detail="Geçersiz key!")
     if result.expiry_date and datetime.fromisoformat(result.expiry_date) < datetime.now():
         raise HTTPException(status_code=401, detail="Key süresi dolmuş!")
-    # Kullanıcı türünü belirle
     user_type = getattr(result, 'user_type', None)
     if not user_type:
         user_type = 'admin' if result.is_admin else 'normal'
