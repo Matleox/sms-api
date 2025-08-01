@@ -731,10 +731,12 @@ async def get_sms_logs(
     page: int = 1,
     limit: int = 10,
     user_key: str = None,
+    user_id: str = None,
     user_type: str = None,
     status: str = None,
     start_date: str = None,
-    end_date: str = None
+    end_date: str = None,
+    sort_order: str = 'desc'
 ):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
@@ -745,7 +747,7 @@ async def get_sms_logs(
     if not payload.get("is_admin", False):
         raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
     
-    # Base query
+    # Base query with JOIN
     query = """
         SELECT sl.*, u.user_type, u.is_admin 
         FROM sms_logs sl 
@@ -758,6 +760,10 @@ async def get_sms_logs(
     if user_key:
         query += " AND sl.user_key = :user_key"
         params["user_key"] = user_key
+    
+    if user_id:
+        query += " AND sl.user_id LIKE :user_id"
+        params["user_id"] = f"%{user_id}%"
     
     if user_type and user_type != 'all':
         if user_type == 'admin':
@@ -783,9 +789,9 @@ async def get_sms_logs(
     total_result = db.execute(text(count_query), params).fetchone()
     total_count = total_result.total if total_result else 0
     
-    # Sayfalama
+    # Sayfalama ve sıralama
     offset = (page - 1) * limit
-    query += " ORDER BY sl.timestamp DESC LIMIT :limit OFFSET :offset"
+    query += f" ORDER BY sl.timestamp {sort_order.upper()} LIMIT :limit OFFSET :offset"
     params["limit"] = limit
     params["offset"] = offset
     
