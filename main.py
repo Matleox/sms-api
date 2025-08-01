@@ -273,23 +273,6 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
         "user_type": user_type,
         "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
-    
-    # User log kaydı ekle
-    try:
-        db.execute(text("""
-            INSERT INTO user_logs (user_key, user_id, user_type, action, ip_address)
-            VALUES (:user_key, :user_id, :user_type, :action, :ip_address)
-        """), {
-            "user_key": result.key,
-            "user_id": result.user_id,
-            "user_type": user_type,
-            "action": "login",
-            "ip_address": request.client.host if request.client else None
-        })
-        db.commit()
-    except Exception as e:
-        print(f"User log kaydı hatası: {e}")
-    
     return {
         "access_token": token, 
         "is_admin": result.is_admin,
@@ -870,98 +853,6 @@ async def clear_sms_logs(token: str = Depends(oauth2_scheme), db: SessionLocal =
     db.commit()
     
     return {"status": "success", "message": "Tüm SMS logları temizlendi"}
-
-@app.get("/admin/user-logs")
-async def get_user_logs(
-    token: str = Depends(oauth2_scheme), 
-    db: SessionLocal = Depends(get_db),
-    page: int = 1,
-    limit: int = 10
-):
-    if not token:
-        raise HTTPException(status_code=401, detail="Token eksik!")
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except jwt.exceptions.DecodeError:
-        raise HTTPException(status_code=401, detail="Geçersiz token!")
-    if not payload.get("is_admin", False):
-        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
-    
-    # Toplam kayıt sayısı
-    total_result = db.execute(text("SELECT COUNT(*) as total FROM user_logs")).fetchone()
-    total_count = total_result.total if total_result else 0
-    
-    # Sayfalama
-    offset = (page - 1) * limit
-    
-    # Logları çek
-    result = db.execute(text("""
-        SELECT * FROM user_logs 
-        ORDER BY timestamp DESC 
-        LIMIT :limit OFFSET :offset
-    """), {"limit": limit, "offset": offset}).fetchall()
-    
-    logs = []
-    for row in result:
-        logs.append({
-            "id": row.id,
-            "user_key": row.user_key,
-            "user_id": row.user_id,
-            "user_type": row.user_type,
-            "action": row.action,
-            "ip_address": row.ip_address,
-            "timestamp": row.timestamp.isoformat() if row.timestamp else None
-        })
-    
-    return {
-        "logs": logs,
-        "total": total_count,
-        "page": page,
-        "limit": limit,
-        "total_pages": (total_count + limit - 1) // limit
-    }
-
-@app.post("/admin/user-logs/add")
-async def add_user_log(data: dict, db: SessionLocal = Depends(get_db)):
-    user_key = data.get("user_key")
-    user_id = data.get("user_id")
-    user_type = data.get("user_type")
-    action = data.get("action")
-    ip_address = data.get("ip_address")
-    
-    if not all([user_key, user_id, user_type, action]):
-        raise HTTPException(status_code=400, detail="Eksik parametreler!")
-    
-    db.execute(text("""
-        INSERT INTO user_logs (user_key, user_id, user_type, action, ip_address)
-        VALUES (:user_key, :user_id, :user_type, :action, :ip_address)
-    """), {
-        "user_key": user_key,
-        "user_id": user_id,
-        "user_type": user_type,
-        "action": action,
-        "ip_address": ip_address
-    })
-    db.commit()
-    
-    return {"status": "success", "message": "User log kaydı eklendi"}
-
-@app.delete("/admin/user-logs/clear")
-async def clear_user_logs(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    if not token:
-        raise HTTPException(status_code=401, detail="Token eksik!")
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except jwt.exceptions.DecodeError:
-        raise HTTPException(status_code=401, detail="Geçersiz token!")
-    if not payload.get("is_admin", False):
-        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
-    
-    # Tüm user loglarını sil
-    db.execute(text("DELETE FROM user_logs"))
-    db.commit()
-    
-    return {"status": "success", "message": "Tüm user logları temizlendi"}
 
 @app.on_event("startup")
 async def startup_event():
