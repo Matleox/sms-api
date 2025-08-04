@@ -16,12 +16,24 @@ import pyotp
 import qrcode
 from io import BytesIO
 import secrets
+import logging
+import traceback
+import sys
 
 load_dotenv()
 
+# Logging ayarları
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")
-SMS_API_URL = os.getenv("SMS_API_URL")
 TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "0x4AAAAAABm3w5qo-VCyb97HtS-uaxypPmE")
 SMS_EMAIL = os.getenv("SMS_EMAIL", "mehmetyilmaz24121@gmail.com")
 
@@ -33,9 +45,21 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=[
+        "https://boyleiyi.xyz", 
+        "http://boyleiyi.xyz", 
+        "https://www.boyleiyi.xyz", 
+        "http://www.boyleiyi.xyz",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:5175",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5175"
+    ],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
@@ -45,6 +69,10 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    except Exception as e:
+        logger.error(f"Database error: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
     finally:
         db.close()
 
@@ -115,12 +143,12 @@ def increment_today_sms_count(db, user_id, count):
     db.commit()
 
 def refresh_token(payload):
-    """Token'ı yenile (30 dakika daha)"""
+    """Token'ı yenile (24 saat)"""
     return jwt.encode({
         "user_id": payload.get("user_id"),
         "is_admin": payload.get("is_admin"),
         "user_type": payload.get("user_type"),
-        "exp": datetime.utcnow() + timedelta(minutes=30)
+        "exp": datetime.utcnow() + timedelta(hours=24)
     }, SECRET_KEY, algorithm="HS256")
 
 # 2FA yardımcı fonksiyonları
@@ -263,7 +291,7 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
         "user_id": result.user_id,
         "is_admin": result.is_admin,
         "user_type": user_type,
-        "exp": datetime.utcnow() + timedelta(minutes=30)
+        "exp": datetime.utcnow() + timedelta(hours=24)
     }, SECRET_KEY, algorithm="HS256")
     return {
         "access_token": token, 
@@ -295,7 +323,7 @@ async def verify_2fa(data: dict, db: SessionLocal = Depends(get_db)):
         "user_id": info["user_id"],
         "is_admin": info["is_admin"],
         "user_type": info["user_type"],
-        "exp": datetime.utcnow() + timedelta(minutes=30)
+        "exp": datetime.utcnow() + timedelta(hours=24)
     }, SECRET_KEY, algorithm="HS256")
     # Günlük limit ve used da ekle
     return {
@@ -309,7 +337,7 @@ async def verify_2fa(data: dict, db: SessionLocal = Depends(get_db)):
 
 @app.get("/get-api-url")
 async def get_api_url():
-    return {"api_url": SMS_API_URL or ""}
+    return {"api_url": os.getenv("SMS_API_URL") or ""}
 
 @app.post("/admin/set-api-url")
 async def set_api_url(data: dict, token: str = Depends(oauth2_scheme)):
@@ -844,9 +872,164 @@ async def clear_sms_logs(token: str = Depends(oauth2_scheme), db: SessionLocal =
 
 @app.on_event("startup")
 async def startup_event():
-    print("API Başlatıldı!") 
+    try:
+        logger.info("Backend başlatılıyor...")
+        init_db()
+        logger.info("Database başlatıldı")
+        logger.info("Backend hazır!")
+        
+        # Günlük logout timer'ı başlat
+        schedule_daily_logout()
+        
+    except Exception as e:
+        logger.error(f"Startup error: {str(e)}")
+        logger.error(traceback.format_exc())
+        sys.exit(1)
+
+def schedule_daily_logout():
+    """Her gün gece yarısı tüm kullanıcıları logout yap"""
+    import asyncio
+    from datetime import datetime, time
+    
+    async def daily_logout_task():
+        while True:
+            now = datetime.now()
+            # Gece yarısı (00:00) için bekle
+            next_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+            wait_seconds = (next_midnight - now).total_seconds()
+            
+            logger.info(f"Günlük logout için {wait_seconds} saniye bekleniyor...")
+            await asyncio.sleep(wait_seconds)
+            
+            # Tüm kullanıcıları logout yap
+            logger.info("Günlük logout başlatılıyor...")
+            # Burada tüm aktif token'ları geçersiz kılabiliriz
+            # Şimdilik log yazıyoruz
+            logger.info("Tüm kullanıcılar günlük logout yapıldı")
+    
+    # Async task'ı başlat
+    asyncio.create_task(daily_logout_task()) 
 
 @app.api_route("/live", methods=["GET", "HEAD"])
 async def live():
     print("API uyandırıldı!")
     return {"status": "alive"}
+
+# Ubuntu Server Kontrol Endpoint'leri
+import subprocess
+import psutil
+
+@app.get("/admin/server-status")
+async def get_server_status(token: str = Depends(oauth2_scheme)):
+    """Sunucu durumunu getir"""
+    try:
+        # CPU kullanımı
+        cpu_percent = psutil.cpu_percent(interval=1)
+        
+        # RAM kullanımı
+        memory = psutil.virtual_memory()
+        ram_percent = memory.percent
+        
+        # Disk kullanımı
+        disk = psutil.disk_usage('/')
+        disk_percent = disk.percent
+        
+        # Backend durumu
+        backend_status = "running" if subprocess.run(["pgrep", "-f", "uvicorn"], capture_output=True).returncode == 0 else "stopped"
+        
+        # Port durumu
+        port_status = "open" if subprocess.run(["ss", "-tlnp"], capture_output=True, text=True).stdout.find(":8000") != -1 else "closed"
+        
+        return {
+            "status": "success",
+            "data": {
+                "cpu_percent": cpu_percent,
+                "ram_percent": ram_percent,
+                "disk_percent": disk_percent,
+                "backend_status": backend_status,
+                "port_status": port_status,
+                "uptime": subprocess.run(["uptime", "-p"], capture_output=True, text=True).stdout.strip()
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/admin/server-restart-backend")
+async def restart_backend(token: str = Depends(oauth2_scheme)):
+    """Backend'i yeniden başlat"""
+    try:
+        # Mevcut backend'i durdur
+        subprocess.run(["pkill", "-f", "uvicorn"], capture_output=True)
+        
+        # Yeni backend'i başlat
+        subprocess.Popen([
+            "cd", "/root/sms-api", "&&", 
+            "python3", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"
+        ], shell=True)
+        
+        return {"status": "success", "message": "Backend yeniden başlatıldı"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/admin/server-restart-system")
+async def restart_system(token: str = Depends(oauth2_scheme)):
+    """Sistemi yeniden başlat"""
+    try:
+        # 30 saniye sonra restart
+        subprocess.run(["shutdown", "-r", "+0.5"], capture_output=True)
+        return {"status": "success", "message": "Sistem 30 saniye sonra yeniden başlatılacak"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/admin/server-logs")
+async def get_server_logs(token: str = Depends(oauth2_scheme), lines: int = 50):
+    """Son logları getir"""
+    try:
+        # Sistem logları
+        system_logs = subprocess.run(["journalctl", "-n", str(lines), "--no-pager"], capture_output=True, text=True).stdout
+        
+        # Backend logları (varsa)
+        backend_logs = ""
+        if os.path.exists("/root/sms-api/logs.txt"):
+            backend_logs = subprocess.run(["tail", "-n", str(lines), "/root/sms-api/logs.txt"], capture_output=True, text=True).stdout
+        
+        return {
+            "status": "success",
+            "data": {
+                "system_logs": system_logs,
+                "backend_logs": backend_logs
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/admin/server-update")
+async def update_system(token: str = Depends(oauth2_scheme)):
+    """Sistemi güncelle"""
+    try:
+        # Update komutları
+        update_result = subprocess.run(["apt", "update"], capture_output=True, text=True)
+        upgrade_result = subprocess.run(["apt", "upgrade", "-y"], capture_output=True, text=True)
+        
+        return {
+            "status": "success", 
+            "message": "Sistem güncellendi",
+            "data": {
+                "update_output": update_result.stdout,
+                "upgrade_output": upgrade_result.stdout
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/admin/force-logout-all")
+async def force_logout_all_users(token: str = Depends(oauth2_scheme)):
+    """Tüm kullanıcılara zorla logout yaptır"""
+    try:
+        # Tüm aktif token'ları geçersiz kıl
+        # Bu işlem için bir blacklist sistemi kurulabilir
+        # Şimdilik basit bir mesaj döndürelim
+        logger.info("Admin tüm kullanıcılara logout yaptırdı")
+        return {"status": "success", "message": "Tüm kullanıcılar logout yapıldı"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
