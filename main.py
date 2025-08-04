@@ -22,8 +22,8 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")
 SMS_API_URL = os.getenv("SMS_API_URL")
-BACKEND_URL = os.getenv("BACKEND_URL", "https://sms-api-qb7q.onrender.com")
 TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "0x4AAAAAABm3w5qo-VCyb97HtS-uaxypPmE")
+SMS_EMAIL = os.getenv("SMS_EMAIL", "mehmetyilmaz24121@gmail.com")
 
 if not DATABASE_URL:
     raise Exception("DATABASE_URL environment variable not set!")
@@ -89,13 +89,6 @@ def init_db():
                 INDEX idx_status (status)
             );
         """))
-        conn.execute(text("""
-            INSERT IGNORE INTO settings (`key`, value)
-            VALUES (:key, :value)
-        """), {
-            "key": "backend_url",
-            "value": "https://sms-api-qb7q.onrender.com"
-        })
         conn.commit()
 
 init_db()
@@ -390,7 +383,7 @@ async def send_sms(data: dict, request: Request, token: str = Depends(oauth2_sch
         if daily_used + count > 500:
             raise HTTPException(status_code=403, detail="Günlük 500 SMS sınırı!")
 
-    email = "mehmetyilmaz24121@gmail.com"
+    email = SMS_EMAIL
 
     # Kullanıcı bilgilerini al
     user_result = db.execute(text("SELECT `key` FROM users WHERE user_id = :user_id"), {"user_id": user_id}).fetchone()
@@ -653,10 +646,6 @@ async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: S
         "message": "Backend URL kaydedildi",
         "new_token": new_token
     }
-
-@app.get("/get-backend-url")
-async def get_backend_url():
-    return {"backend_url": BACKEND_URL}
 
 @app.get("/user-stats")
 async def get_user_stats(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
