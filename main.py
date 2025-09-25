@@ -16,26 +16,14 @@ import pyotp
 import qrcode
 from io import BytesIO
 import secrets
-import logging
-import traceback
-import sys
 
 load_dotenv()
 
-# Logging ayarları
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-logger = logging.getLogger(__name__)
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")
+SMS_API_URL = os.getenv("SMS_API_URL")
+BACKEND_URL = os.getenv("BACKEND_URL", "https://sms-api-qb7q.onrender.com")
 TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "0x4AAAAAABm3w5qo-VCyb97HtS-uaxypPmE")
-SMS_EMAIL = os.getenv("SMS_EMAIL", "mehmetyilmaz24121@gmail.com")
 
 if not DATABASE_URL:
     raise Exception("DATABASE_URL environment variable not set!")
@@ -45,21 +33,9 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://boyleiyi.xyz", 
-        "http://boyleiyi.xyz", 
-        "https://www.boyleiyi.xyz", 
-        "http://www.boyleiyi.xyz",
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://localhost:5175",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5175"
-    ],
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_origins=["*"],
+    allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True,
 )
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
@@ -69,10 +45,6 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
-    except Exception as e:
-        logger.error(f"Database error: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise
     finally:
         db.close()
 
@@ -100,23 +72,12 @@ def init_db():
             );
         """))
         conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS sms_logs (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_key VARCHAR(255) NOT NULL,
-                user_id VARCHAR(255) NOT NULL,
-                phone_number VARCHAR(20) NOT NULL,
-                sms_count INT NOT NULL,
-                success_count INT DEFAULT 0,
-                failed_count INT DEFAULT 0,
-                mode ENUM('normal', 'turbo') NOT NULL,
-                status ENUM('pending', 'sending', 'completed', 'failed') NOT NULL,
-                ip_address VARCHAR(45),
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_user_key (user_key),
-                INDEX idx_timestamp (timestamp),
-                INDEX idx_status (status)
-            );
-        """))
+            INSERT IGNORE INTO settings (`key`, value)
+            VALUES (:key, :value)
+        """), {
+            "key": "backend_url",
+            "value": "https://sms-api-qb7q.onrender.com"
+        })
         conn.commit()
 
 init_db()
@@ -143,12 +104,12 @@ def increment_today_sms_count(db, user_id, count):
     db.commit()
 
 def refresh_token(payload):
-    """Token'ı yenile (24 saat)"""
+    """Token'ı yenile (30 dakika daha)"""
     return jwt.encode({
         "user_id": payload.get("user_id"),
         "is_admin": payload.get("is_admin"),
         "user_type": payload.get("user_type"),
-        "exp": datetime.utcnow() + timedelta(hours=24)
+        "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
 
 # 2FA yardımcı fonksiyonları
@@ -291,7 +252,7 @@ async def login(data: dict, request: Request, db: SessionLocal = Depends(get_db)
         "user_id": result.user_id,
         "is_admin": result.is_admin,
         "user_type": user_type,
-        "exp": datetime.utcnow() + timedelta(hours=24)
+        "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
     return {
         "access_token": token, 
@@ -323,7 +284,7 @@ async def verify_2fa(data: dict, db: SessionLocal = Depends(get_db)):
         "user_id": info["user_id"],
         "is_admin": info["is_admin"],
         "user_type": info["user_type"],
-        "exp": datetime.utcnow() + timedelta(hours=24)
+        "exp": datetime.utcnow() + timedelta(minutes=30)
     }, SECRET_KEY, algorithm="HS256")
     # Günlük limit ve used da ekle
     return {
@@ -337,7 +298,7 @@ async def verify_2fa(data: dict, db: SessionLocal = Depends(get_db)):
 
 @app.get("/get-api-url")
 async def get_api_url():
-    return {"api_url": os.getenv("SMS_API_URL") or ""}
+    return {"api_url": SMS_API_URL or ""}
 
 @app.post("/admin/set-api-url")
 async def set_api_url(data: dict, token: str = Depends(oauth2_scheme)):
@@ -387,7 +348,7 @@ async def set_api_url(data: dict, token: str = Depends(oauth2_scheme)):
         raise HTTPException(status_code=500, detail=f"Güncelleme hatası: {str(e)}")
 
 @app.post("/send-sms")
-async def send_sms(data: dict, request: Request, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
+async def send_sms(data: dict, token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
     if not token:
         raise HTTPException(status_code=401, detail="Token eksik!")
     try:
@@ -411,80 +372,24 @@ async def send_sms(data: dict, request: Request, token: str = Depends(oauth2_sch
         if daily_used + count > 500:
             raise HTTPException(status_code=403, detail="Günlük 500 SMS sınırı!")
 
-    email = SMS_EMAIL
+    email = "mehmetyilmaz24121@gmail.com"
 
-    # Kullanıcı bilgilerini al
-    user_result = db.execute(text("SELECT `key` FROM users WHERE user_id = :user_id"), {"user_id": user_id}).fetchone()
-    user_key = user_result.key if user_result else user_id
-
-    # IP adresini al
-    ip_address = request.client.host if request.client else "unknown"
-
-    # SMS log kaydı oluştur (başlangıçta)
-    db.execute(text("""
-        INSERT INTO sms_logs (user_key, user_id, phone_number, sms_count, success_count, failed_count, mode, status, ip_address)
-        VALUES (:user_key, :user_id, :phone_number, :sms_count, :success_count, :failed_count, :mode, :status, :ip_address)
-    """), {
-        "user_key": user_key,
-        "user_id": user_id,
-        "phone_number": phone,
-        "sms_count": count,
-        "success_count": 0,
-        "failed_count": 0,
-        "mode": "turbo" if mode == 2 else "normal",
-        "status": "sending",
-        "ip_address": ip_address
-    })
-    db.commit()
+    try:
+        enough_module = importlib.import_module("enough")
+        if not hasattr(enough_module, "is_enough"):
+            raise AttributeError("enough modülünde is_enough fonksiyonu bulunamadı!")
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"enough modülü yüklenemedi: {str(e)}")
+    except AttributeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     try:
         print(f"SMS gönderiliyor - Phone: {phone}, Email: {email}, Count: {count}")
         sent_count, failed_count = enough.is_enough(phone=phone, email=email, count=count, mode="turbo" if mode == 2 else "normal")
         print(f"SMS sonucu - Başarılı: {sent_count}, Başarısız: {failed_count}, Toplam: {sent_count + failed_count}")
-        
-        # Log kaydını güncelle
-        db.execute(text("""
-            UPDATE sms_logs 
-            SET success_count = :success_count, failed_count = :failed_count, status = :status
-            WHERE id = (
-                SELECT id FROM (
-                    SELECT id FROM sms_logs 
-                    WHERE user_key = :user_key AND phone_number = :phone_number
-                    ORDER BY timestamp DESC LIMIT 1
-                ) as temp
-            )
-        """), {
-            "success_count": sent_count,
-            "failed_count": failed_count,
-            "status": "completed",
-            "user_key": user_key,
-            "phone_number": phone
-        })
-        db.commit()
-        
     except Exception as e:
         print(f"SMS Hatası: {e}")
         sent_count, failed_count = 0, count
-        
-        # Hata durumunda log kaydını güncelle
-        db.execute(text("""
-            UPDATE sms_logs 
-            SET success_count = :success_count, failed_count = :failed_count, status = :status
-            WHERE id = (
-                SELECT id FROM (
-                    SELECT id FROM sms_logs 
-                    WHERE user_key = :user_key AND phone_number = :phone_number
-                    ORDER BY timestamp DESC LIMIT 1
-                ) as temp
-            )
-        """), {
-            "success_count": sent_count,
-            "failed_count": failed_count,
-            "status": "failed",
-            "user_key": user_key,
-            "phone_number": phone
-        })
-        db.commit()
 
     # Günlük kullanımı güncelle (sadece normal kullanıcılar için)
     if not is_admin and user_type == "normal":
@@ -675,6 +580,10 @@ async def set_backend_url(data: dict, token: str = Depends(oauth2_scheme), db: S
         "new_token": new_token
     }
 
+@app.get("/get-backend-url")
+async def get_backend_url():
+    return {"backend_url": BACKEND_URL}
+
 @app.get("/user-stats")
 async def get_user_stats(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
     if not token:
@@ -729,307 +638,23 @@ async def reset_user_limit(data: dict, token: str = Depends(oauth2_scheme), db: 
     if not user_id:
         raise HTTPException(status_code=400, detail="User ID eksik!")
     
-    # Türkiye saat dilimini kullan (UTC+3)
+    # Kullanıcının bugünkü limitini sıfırla
     from datetime import timezone, timedelta
     turkey_tz = timezone(timedelta(hours=3))
     today = datetime.now(turkey_tz).strftime("%Y-%m-%d")
     
-    # Kullanıcının günlük limitini sıfırla
-    db.execute(text("DELETE FROM sms_limits WHERE user_id = :user_id AND date = :today"), 
-               {"user_id": user_id, "today": today})
+    # Eğer bugünkü kayıt varsa sil, yoksa yeni kayıt oluştur
+    db.execute(text("DELETE FROM sms_limits WHERE user_id = :user_id AND date = :today"), {"user_id": user_id, "today": today})
+    db.execute(text("INSERT INTO sms_limits (user_id, date, count) VALUES (:user_id, :today, 0)"), {"user_id": user_id, "today": today})
     db.commit()
     
-    return {"status": "success", "message": "Kullanıcı limiti sıfırlandı"}
-
-@app.get("/admin/sms-logs")
-async def get_sms_logs(
-    token: str = Depends(oauth2_scheme), 
-    db: SessionLocal = Depends(get_db),
-    page: int = 1,
-    limit: int = 10,
-    user_key: str = None,
-    status: str = None,
-    start_date: str = None,
-    end_date: str = None
-):
-    if not token:
-        raise HTTPException(status_code=401, detail="Token eksik!")
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except jwt.exceptions.DecodeError:
-        raise HTTPException(status_code=401, detail="Geçersiz token!")
-    if not payload.get("is_admin", False):
-        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
-    
-    # Base query
-    query = "SELECT * FROM sms_logs WHERE 1=1"
-    params = {}
-    
-    # Filtreler
-    if user_key:
-        query += " AND user_key = :user_key"
-        params["user_key"] = user_key
-    
-    if status:
-        query += " AND status = :status"
-        params["status"] = status
-    
-    if start_date:
-        query += " AND DATE(timestamp) >= :start_date"
-        params["start_date"] = start_date
-    
-    if end_date:
-        query += " AND DATE(timestamp) <= :end_date"
-        params["end_date"] = end_date
-    
-    # Toplam kayıt sayısı
-    count_query = f"SELECT COUNT(*) as total FROM ({query}) as subquery"
-    total_result = db.execute(text(count_query), params).fetchone()
-    total_count = total_result.total if total_result else 0
-    
-    # Sayfalama
-    offset = (page - 1) * limit
-    query += " ORDER BY timestamp DESC LIMIT :limit OFFSET :offset"
-    params["limit"] = limit
-    params["offset"] = offset
-    
-    # Logları çek
-    result = db.execute(text(query), params).fetchall()
-    logs = []
-    
-    for row in result:
-        logs.append({
-            "id": row.id,
-            "user_key": row.user_key,
-            "user_id": row.user_id,
-            "phone_number": row.phone_number,
-            "sms_count": row.sms_count,
-            "success_count": row.success_count,
-            "failed_count": row.failed_count,
-            "mode": row.mode,
-            "status": row.status,
-            "ip_address": row.ip_address,
-            "timestamp": row.timestamp.isoformat() if row.timestamp else None
-        })
-    
-    return {
-        "logs": logs,
-        "total": total_count,
-        "page": page,
-        "limit": limit,
-        "total_pages": (total_count + limit - 1) // limit
-    }
-
-@app.post("/admin/sms-logs/add")
-async def add_sms_log(data: dict, db: SessionLocal = Depends(get_db)):
-    user_key = data.get("user_key")
-    user_id = data.get("user_id")
-    phone_number = data.get("phone_number")
-    sms_count = data.get("sms_count")
-    success_count = data.get("success_count", 0)
-    failed_count = data.get("failed_count", 0)
-    mode = data.get("mode")
-    status = data.get("status")
-    ip_address = data.get("ip_address")
-    
-    if not all([user_key, user_id, phone_number, sms_count, mode, status]):
-        raise HTTPException(status_code=400, detail="Eksik parametreler!")
-    
-    db.execute(text("""
-        INSERT INTO sms_logs (user_key, user_id, phone_number, sms_count, success_count, failed_count, mode, status, ip_address)
-        VALUES (:user_key, :user_id, :phone_number, :sms_count, :success_count, :failed_count, :mode, :status, :ip_address)
-    """), {
-        "user_key": user_key,
-        "user_id": user_id,
-        "phone_number": phone_number,
-        "sms_count": sms_count,
-        "success_count": success_count,
-        "failed_count": failed_count,
-        "mode": mode,
-        "status": status,
-        "ip_address": ip_address
-    })
-    db.commit()
-    
-    return {"status": "success", "message": "SMS log kaydı eklendi"}
-
-@app.delete("/admin/sms-logs/clear")
-async def clear_sms_logs(token: str = Depends(oauth2_scheme), db: SessionLocal = Depends(get_db)):
-    if not token:
-        raise HTTPException(status_code=401, detail="Token eksik!")
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except jwt.exceptions.DecodeError:
-        raise HTTPException(status_code=401, detail="Geçersiz token!")
-    if not payload.get("is_admin", False):
-        raise HTTPException(status_code=403, detail="Yetkisiz erişim!")
-    
-    # Tüm SMS loglarını sil
-    db.execute(text("DELETE FROM sms_logs"))
-    db.commit()
-    
-    return {"status": "success", "message": "Tüm SMS logları temizlendi"}
+    return {"status": "success", "message": f"Kullanıcı {user_id} limiti sıfırlandı"}
 
 @app.on_event("startup")
 async def startup_event():
-    try:
-        logger.info("Backend başlatılıyor...")
-        init_db()
-        logger.info("Database başlatıldı")
-        logger.info("Backend hazır!")
-        
-        # Günlük logout timer'ı başlat
-        schedule_daily_logout()
-        
-    except Exception as e:
-        logger.error(f"Startup error: {str(e)}")
-        logger.error(traceback.format_exc())
-        sys.exit(1)
-
-def schedule_daily_logout():
-    """Her gün gece yarısı tüm kullanıcıları logout yap"""
-    import asyncio
-    from datetime import datetime, time
-    
-    async def daily_logout_task():
-        while True:
-            now = datetime.now()
-            # Gece yarısı (00:00) için bekle
-            next_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-            wait_seconds = (next_midnight - now).total_seconds()
-            
-            logger.info(f"Günlük logout için {wait_seconds} saniye bekleniyor...")
-            await asyncio.sleep(wait_seconds)
-            
-            # Tüm kullanıcıları logout yap
-            logger.info("Günlük logout başlatılıyor...")
-            # Burada tüm aktif token'ları geçersiz kılabiliriz
-            # Şimdilik log yazıyoruz
-            logger.info("Tüm kullanıcılar günlük logout yapıldı")
-    
-    # Async task'ı başlat
-    asyncio.create_task(daily_logout_task()) 
+    print("API Başlatıldı!") 
 
 @app.api_route("/live", methods=["GET", "HEAD"])
 async def live():
     print("API uyandırıldı!")
     return {"status": "alive"}
-
-# Ubuntu Server Kontrol Endpoint'leri
-import subprocess
-import psutil
-
-@app.get("/admin/server-status")
-async def get_server_status(token: str = Depends(oauth2_scheme)):
-    """Sunucu durumunu getir"""
-    try:
-        # CPU kullanımı
-        cpu_percent = psutil.cpu_percent(interval=1)
-        
-        # RAM kullanımı
-        memory = psutil.virtual_memory()
-        ram_percent = memory.percent
-        
-        # Disk kullanımı
-        disk = psutil.disk_usage('/')
-        disk_percent = disk.percent
-        
-        # Backend durumu
-        backend_status = "running" if subprocess.run(["pgrep", "-f", "uvicorn"], capture_output=True).returncode == 0 else "stopped"
-        
-        # Port durumu
-        port_status = "open" if subprocess.run(["ss", "-tlnp"], capture_output=True, text=True).stdout.find(":8000") != -1 else "closed"
-        
-        return {
-            "status": "success",
-            "data": {
-                "cpu_percent": cpu_percent,
-                "ram_percent": ram_percent,
-                "disk_percent": disk_percent,
-                "backend_status": backend_status,
-                "port_status": port_status,
-                "uptime": subprocess.run(["uptime", "-p"], capture_output=True, text=True).stdout.strip()
-            }
-        }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.post("/admin/server-restart-backend")
-async def restart_backend(token: str = Depends(oauth2_scheme)):
-    """Backend'i yeniden başlat"""
-    try:
-        # Mevcut backend'i durdur
-        subprocess.run(["pkill", "-f", "uvicorn"], capture_output=True)
-        
-        # Yeni backend'i başlat
-        subprocess.Popen([
-            "cd", "/root/sms-api", "&&", 
-            "python3", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"
-        ], shell=True)
-        
-        return {"status": "success", "message": "Backend yeniden başlatıldı"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.post("/admin/server-restart-system")
-async def restart_system(token: str = Depends(oauth2_scheme)):
-    """Sistemi yeniden başlat"""
-    try:
-        # 30 saniye sonra restart
-        subprocess.run(["shutdown", "-r", "+0.5"], capture_output=True)
-        return {"status": "success", "message": "Sistem 30 saniye sonra yeniden başlatılacak"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.get("/admin/server-logs")
-async def get_server_logs(token: str = Depends(oauth2_scheme), lines: int = 50):
-    """Son logları getir"""
-    try:
-        # Sistem logları
-        system_logs = subprocess.run(["journalctl", "-n", str(lines), "--no-pager"], capture_output=True, text=True).stdout
-        
-        # Backend logları (varsa)
-        backend_logs = ""
-        if os.path.exists("/root/sms-api/logs.txt"):
-            backend_logs = subprocess.run(["tail", "-n", str(lines), "/root/sms-api/logs.txt"], capture_output=True, text=True).stdout
-        
-        return {
-            "status": "success",
-            "data": {
-                "system_logs": system_logs,
-                "backend_logs": backend_logs
-            }
-        }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.post("/admin/server-update")
-async def update_system(token: str = Depends(oauth2_scheme)):
-    """Sistemi güncelle"""
-    try:
-        # Update komutları
-        update_result = subprocess.run(["apt", "update"], capture_output=True, text=True)
-        upgrade_result = subprocess.run(["apt", "upgrade", "-y"], capture_output=True, text=True)
-        
-        return {
-            "status": "success", 
-            "message": "Sistem güncellendi",
-            "data": {
-                "update_output": update_result.stdout,
-                "upgrade_output": upgrade_result.stdout
-            }
-        }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.post("/admin/force-logout-all")
-async def force_logout_all_users(token: str = Depends(oauth2_scheme)):
-    """Tüm kullanıcılara zorla logout yaptır"""
-    try:
-        # Tüm aktif token'ları geçersiz kıl
-        # Bu işlem için bir blacklist sistemi kurulabilir
-        # Şimdilik basit bir mesaj döndürelim
-        logger.info("Admin tüm kullanıcılara logout yaptırdı")
-        return {"status": "success", "message": "Tüm kullanıcılar logout yapıldı"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
